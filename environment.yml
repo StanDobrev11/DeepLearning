@@ -1,0 +1,14 @@
+name: venv
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - jupyterlab
+  - pandas
+  - scipy
+  - scikit-learn
+  - numpy
+  - matplotlib
+  - statsmodels
+  - seaborn
+  - xgboost
