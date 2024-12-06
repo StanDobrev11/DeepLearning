@@ -1,0 +1,6 @@
+jupyterlab
+numpy
+matplotlib
+scipy
+pandas
+packaging>=22.0

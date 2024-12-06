@@ -1,11 +1,10 @@
-version: '3.8'
-
 services:
-  jupyter_lab:
+  tensorflow:
     build:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "8888:8888"  # Map Jupyter Lab's default port to the host
+      - "8888:8888"
     volumes:
-      - .:/app  # Mounts the current directory into /app in the container
+      - .:/app
+    runtime: nvidia

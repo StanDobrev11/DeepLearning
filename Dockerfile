@@ -1,22 +1,26 @@
-# Use the official Miniconda image as the base
-FROM continuumio/miniconda3
+# Use the TensorFlow GPU image as the base
+FROM tensorflow/tensorflow:2.10.1-gpu
 
-# Set the working directory in the container
+# Set the working directory
 WORKDIR /app
 
-# Copy the environment file for data science tools
-COPY environment.yml .
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3-pip \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 
-# Create the Conda environment
-RUN conda env create -f environment.yml && \
-    conda clean -afy && \
-    conda init bash
+# Upgrade pip to the latest version
+RUN pip install --no-cache-dir --upgrade pip
 
-# Activate the environment
-ENV PATH /opt/conda/envs/venv/bin:$PATH
+# Copy requirements.txt to the container
+COPY requirements.txt /app/
 
-# Expose the Jupyter Lab default port
+# Install Python dependencies
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Expose Jupyter Lab's default port
 EXPOSE 8888
 
-# Start Jupyter Lab as the default command
+# Command to start Jupyter Lab
 CMD ["jupyter", "lab", "--ip=0.0.0.0", "--port=8888", "--allow-root"]
