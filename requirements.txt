@@ -4,3 +4,4 @@ matplotlib
 scipy
 pandas
 packaging>=22.0
+torch==1.11.0
