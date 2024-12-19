@@ -16,9 +16,6 @@ RUN apt-get update && apt-get install -y \
     libxrender1 \
     libxext6 \
     libsm6 \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN apt-get update && apt-get install -y \
     x11-utils \
     && rm -rf /var/lib/apt/lists/*
 
@@ -30,6 +27,9 @@ COPY requirements.txt /app/
 
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Ensure ipywidgets are enabled for JupyterLab
+RUN jupyter labextension disable @jupyter-widgets/jupyterlab-manager || true
 
 # Expose Jupyter Lab's default port
 EXPOSE 8888

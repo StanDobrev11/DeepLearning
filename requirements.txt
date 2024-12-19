@@ -1,4 +1,6 @@
 jupyterlab
+ipywidgets
+jupyterlab-widgets
 numpy
 matplotlib
 scipy
