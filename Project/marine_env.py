@@ -7,9 +7,11 @@ from utils import plane_sailing_next_position, rumbline_distance, calculate_bear
 
 
 class MarineEnv(gym.Env):
-    def __init__(self, time_scale=60):
-        super(MarineEnv, self).__init__()
+    metadata = {'render.modes': ['human', 'rgb_array'], 'render_fps': 30}
 
+    def __init__(self, render_mode=None, time_scale=60):
+        super(MarineEnv, self).__init__()
+        self.render_mode = render_mode
         # Define action space (5 discrete actions)
         self.action_space = spaces.Discrete(3)
 
@@ -33,7 +35,7 @@ class MarineEnv(gym.Env):
 
         # Define waypoint
         self.waypoint = np.array([30.4, 100.25])  # Example waypoint (lat, lon)
-        self.waypoint_reach_treshold = 0.01  # Limit considered reaching of waypoint
+        self.waypoint_reach_threshold = 0.01  # Limit considered reaching of waypoint
 
         # Pygame setup
         self.window_size = 600  # Pixels for visualization
@@ -55,7 +57,7 @@ class MarineEnv(gym.Env):
         """Calculate the distance to the waypoint in nautical miles."""
         delta_lat = (self.waypoint[0] - lat) * 60  # Convert degrees to NM
         delta_lon = (self.waypoint[1] - lon) * 60 * np.cos(np.radians(lat))  # Adjust for latitude
-        return np.sqrt(delta_lat**2 + delta_lon**2)  # Pythagorean theorem
+        return np.sqrt(delta_lat ** 2 + delta_lon ** 2)  # Pythagorean theorem
 
     def step(self, action):
         lat, lon, course, speed = self.state
@@ -66,10 +68,6 @@ class MarineEnv(gym.Env):
             course = (course - 1) % 360
         elif action == 1:  # Turn starboard (right) by 5 degrees
             course = (course + 1) % 360
-        # elif action == 2:  # Slow down by 1 knot
-        #     speed = max(speed - 1, 5)  # Min speed is 0 knots
-        # elif action == 3:  # Speed up by 1 knot
-        #     speed = min(speed + 1, 20)  # Max speed is 20 knots
         elif action == 2:  # Keep course and speed
             pass
 
@@ -113,7 +111,7 @@ class MarineEnv(gym.Env):
                 reward -= heading_diff / 10.0  # Penalty proportional to misalignment
 
         # The episode ends when speed is 0, vessel moves out of bounds, or waypoint is reached
-        waypoint_reached = distance_to_waypoint <= self.waypoint_reach_treshold  # Within 0.1 NM
+        waypoint_reached = distance_to_waypoint <= self.waypoint_reach_threshold  # Within 0.1 NM
         done = waypoint_reached or speed == 0 or \
                lat <= self.lat_bounds[0] or lat >= self.lat_bounds[1] or \
                lon <= self.lon_bounds[0] or lon >= self.lon_bounds[1]
@@ -189,5 +187,3 @@ class MarineEnv(gym.Env):
         if self.window is not None:
             pygame.quit()
             self.window = None
-
-
