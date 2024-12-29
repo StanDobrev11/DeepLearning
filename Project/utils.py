@@ -90,3 +90,36 @@ def calculate_bearing(lat1, lon1, lat2, lon2):
     y = np.cos(lat1) * np.sin(lat2) - np.sin(lat1) * np.cos(lat2) * np.cos(delta_lon)
     bearing = np.degrees(np.arctan2(x, y))
     return (bearing + 360) % 360  # Normalize to [0, 360]
+
+
+def calculate_relative_bearing(heading, bearing):
+    """
+    Calculates the relative bearing between the ship's heading and a given true bearing.
+    The result is expressed in a semi-circle coordinate system:
+    - Starboard bearings (clockwise from the heading) are positive (0 to 180 degrees).
+    - Port bearings (counterclockwise from the heading) are negative (0 to -180 degrees).
+
+    :param heading: Current ship heading in degrees (0 to 360).
+    :param bearing: True bearing to the target in degrees (0 to 360).
+    :return: Relative bearing in degrees (positive for starboard, negative for port).
+    """
+    # Normalize heading and bearing to 0-360 degrees
+    heading = heading % 360
+    bearing = bearing % 360
+
+    # Calculate the difference between the bearing and the heading
+    diff = (bearing - heading + 360) % 360
+
+    # Map the difference to the semi-circle system
+    if diff > 180:
+        relative_bearing = diff - 360  # Convert to negative (port side)
+    else:
+        relative_bearing = diff  # Positive (starboard side)
+
+    return relative_bearing
+
+
+if __name__ == '__main__':
+    true_bearing = calculate_bearing(30.1, 100.1, 30.4, 100.25)
+    print(true_bearing)
+    print(calculate_relative_bearing(45, true_bearing))

@@ -4,7 +4,8 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "8888:8888"
+      - "8888:8888"  # For Jupyter Notebook/Lab
+      - "6006:6006"  # For TensorBoard
     volumes:
       - .:/app
       - /tmp/.X11-unix:/tmp/.X11-unix  # Mount the X11 socket

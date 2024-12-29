@@ -3,15 +3,12 @@ from gymnasium import spaces
 import numpy as np
 import pygame
 
-from utils import plane_sailing_next_position, rumbline_distance, calculate_bearing
+from utils import plane_sailing_next_position, rumbline_distance, calculate_bearing, calculate_relative_bearing
 
 
 class MarineEnv(gym.Env):
-    metadata = {'render.modes': ['human', 'rgb_array'], 'render_fps': 30}
-
-    def __init__(self, render_mode=None, time_scale=60):
+    def __init__(self, time_scale=60):
         super(MarineEnv, self).__init__()
-        self.render_mode = render_mode
         # Define action space (5 discrete actions)
         self.action_space = spaces.Discrete(3)
 
@@ -19,13 +16,14 @@ class MarineEnv(gym.Env):
         self.lat_bounds = (30.0, 30.5)  # Example latitude bounds (30 NM range)
         self.lon_bounds = (100.0, 100.5)  # Example longitude bounds
         self.observation_space = spaces.Box(
-            low=np.array([self.lat_bounds[0], self.lon_bounds[0], 0, 0]),
-            high=np.array([self.lat_bounds[1], self.lon_bounds[1], 360, 20]),
+            low=np.array([self.lat_bounds[0], self.lon_bounds[0], 0, 0, -180, 0]),
+            high=np.array([self.lat_bounds[1], self.lon_bounds[1], 360, 20, 180, 50]),
             dtype=np.float64
         )
 
         # Initialize the state
-        self.state = np.array([30.1, 100.1, 45.0, 15.0])  # [lat, lon, course, speed in knots]
+        self.state = np.array(
+            [30.1, 100.1, 45.0, 15.0, 23, 15])  # [lat, lon, course, speed in knots, relative bearing to wp, distance to wp]
         self.time_scale = time_scale  # How much to scale simulation time (1x = real time)
         self.real_world_dt = 1 / 60.0  # Real-world time step (1 minute)
 
@@ -60,8 +58,7 @@ class MarineEnv(gym.Env):
         return np.sqrt(delta_lat ** 2 + delta_lon ** 2)  # Pythagorean theorem
 
     def step(self, action):
-        lat, lon, course, speed = self.state
-        previous_distance_to_waypoint = self.calculate_distance_to_waypoint(lat, lon)
+        lat, lon, course, speed, previous_rel_wp_bearing, previous_wp_distance = self.state
 
         # Update based on action
         if action == 0:  # Turn port (left) by 5 degrees
@@ -78,43 +75,58 @@ class MarineEnv(gym.Env):
         lat = np.clip(lat, self.lat_bounds[0], self.lat_bounds[1])
         lon = np.clip(lon, self.lon_bounds[0], self.lon_bounds[1])
 
-        # Update state
-        self.state = np.array([lat, lon, course, speed])
-        self.total_sim_time += self.sim_dt  # Increment simulated time
-
         # Calculate distance to waypoint
         distance_to_waypoint = self.calculate_distance_to_waypoint(lat, lon)
 
         # Calculate bearing to the waypoint
         bearing_to_waypoint = calculate_bearing(lat, lon, self.waypoint[0], self.waypoint[1])
+        # calculate relative bearing
+        rel_wp_bearing = calculate_relative_bearing(course, bearing_to_waypoint)
 
-        # Reward Logic
+        # Update state
+        self.state = np.array([lat, lon, course, speed, rel_wp_bearing, distance_to_waypoint])
+        self.total_sim_time += self.sim_dt  # Increment simulated time
+
+        # Reward Initialization
         reward = 0.0
 
         # Reward for reaching the waypoint
-        if distance_to_waypoint <= self.waypoint_reach_treshold:
-            reward += 100.0  # Large positive reward for reaching the waypoint
+        if distance_to_waypoint <= self.waypoint_reach_threshold:
+            reward += 100.0  # Large reward for successfully reaching the waypoint
         else:
-            # Distance-based reward/penalty
-            if distance_to_waypoint < previous_distance_to_waypoint:
-                reward += 1.0  # Small positive reward for decreasing distance
+            # Distance-Based Reward or Penalty
+            distance_change = previous_wp_distance - distance_to_waypoint
+            reward += max(-1.0, distance_change)  # Reward proportional to distance improvement
+
+            # Bearing Alignment Reward
+            if abs(rel_wp_bearing) <= 5:
+                reward += 2.0  # Strong reward for near-perfect alignment
+            elif abs(rel_wp_bearing) <= 15:
+                reward += 1.0  # Moderate reward for good alignment
+            elif abs(rel_wp_bearing) <= 30:
+                reward += 0.5  # Small reward for decent alignment
             else:
-                reward -= 1.0  # Small penalty for increasing distance
+                reward -= 0.5  # Penalty for poor alignment
 
-            # Heading alignment reward/penalty
-            heading_diff = abs(course - bearing_to_waypoint)
-            heading_diff = min(heading_diff, 360 - heading_diff)  # Smallest angle difference
+            # Reward for Improving Bearing Alignment
+            bearing_change = abs(previous_rel_wp_bearing) - abs(rel_wp_bearing)
+            reward += max(-0.25, bearing_change * 0.25)  # Small reward for improving alignment
 
-            if heading_diff <= 10:  # Within 10° of bearing
-                reward += 1.0  # Reward for alignment
-            else:
-                reward -= heading_diff / 10.0  # Penalty proportional to misalignment
+        # Penalty for Going Out of Bounds
+        out_of_screen = lat <= self.lat_bounds[0] or lat >= self.lat_bounds[1] or \
+                        lon <= self.lon_bounds[0] or lon >= self.lon_bounds[1]
 
-        # The episode ends when speed is 0, vessel moves out of bounds, or waypoint is reached
-        waypoint_reached = distance_to_waypoint <= self.waypoint_reach_threshold  # Within 0.1 NM
-        done = waypoint_reached or speed == 0 or \
-               lat <= self.lat_bounds[0] or lat >= self.lat_bounds[1] or \
-               lon <= self.lon_bounds[0] or lon >= self.lon_bounds[1]
+        if out_of_screen:
+            reward -= 100.0  # Large penalty for leaving bounds
+        else:
+            # Small penalty for approaching bounds
+            lat_penalty = min(0.0, (lat - self.lat_bounds[0]) * (self.lat_bounds[1] - lat) * 0.01)
+            lon_penalty = min(0.0, (lon - self.lon_bounds[0]) * (self.lon_bounds[1] - lon) * 0.01)
+            reward += lat_penalty + lon_penalty
+
+        # Episode Termination Conditions
+        waypoint_reached = distance_to_waypoint <= self.waypoint_reach_threshold
+        done = waypoint_reached or out_of_screen
 
         return self.state, reward, done, waypoint_reached, {"total_sim_time": self.total_sim_time}
 
@@ -136,9 +148,13 @@ class MarineEnv(gym.Env):
             distance_to_waypoint = rumbline_distance([random_lat, random_lon], [waypoint_lat, waypoint_lon])
             if distance_to_waypoint > 5.0:  # Ensure waypoint is at least 5 NM away from the vessel
                 break
+        # calculate relative bearing and distance to wp
+        true_wp_bearing = calculate_bearing(random_lat, random_lon, waypoint_lat, waypoint_lon)
+        relative_wp_bearing = calculate_relative_bearing(random_course, true_wp_bearing)
 
         # Update the state and waypoint
-        self.state = np.array([random_lat, random_lon, random_course, random_speed])
+        self.state = np.array(
+            [random_lat, random_lon, random_course, random_speed, relative_wp_bearing, distance_to_waypoint])
         self.waypoint = np.array([waypoint_lat, waypoint_lon])
 
         # Reset simulation time
@@ -155,17 +171,29 @@ class MarineEnv(gym.Env):
 
     def render(self, mode="human"):
         if self.window is None:
+            print("Initializing pygame...")
             pygame.init()
             self.window = pygame.display.set_mode((self.window_size, self.window_size))
             pygame.display.set_caption("Marine Environment")
             self.clock = pygame.time.Clock()
+            print("Pygame initialized.")
+
+        # Handle pygame events
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                self.close()
 
         # Clear the screen
         self.window.fill((0, 0, 50))  # Dark blue background
 
+        # Debugging state and waypoint
+        print(f"Debug: State = {self.state}, Waypoint = {self.waypoint}")
+
         # Draw the vessel
-        lat, lon, course, speed = self.state
+        lat, lon, course, speed, *rest = self.state
         px, py = self.latlon_to_pixels(lat, lon)
+        print(f"Debug: Vessel at pixels ({px}, {py})")
+
         pygame.draw.circle(self.window, (255, 255, 255), (px, py), self.vessel_size)
 
         # Draw heading as a line
@@ -173,10 +201,12 @@ class MarineEnv(gym.Env):
         line_length = int(speed * self.scale)  # Line length proportional to speed
         end_x = px + int(line_length * np.cos(heading_rad))
         end_y = py + int(line_length * np.sin(heading_rad))
+        print(f"Debug: Heading line to ({end_x}, {end_y})")
         pygame.draw.line(self.window, (255, 0, 0), (px, py), (end_x, end_y), 2)
 
         # Draw the waypoint
         waypoint_px, waypoint_py = self.latlon_to_pixels(*self.waypoint)
+        print(f"Debug: Waypoint at pixels ({waypoint_px}, {waypoint_py})")
         pygame.draw.circle(self.window, (0, 255, 0), (waypoint_px, waypoint_py), self.vessel_size)
 
         # Update the display
