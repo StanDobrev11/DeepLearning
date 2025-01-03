@@ -9,7 +9,12 @@ scikit-learn
 seaborn
 tqdm
 packaging>=22.0
-torch==1.11.0
+torch==2.4.1
 torcheval
 gymnasium
 pygame
+swig
+tensordict
+torchrl
+torchvision
+torchaudio

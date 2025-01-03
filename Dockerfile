@@ -7,16 +7,13 @@ WORKDIR /app
 # Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-pip \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install system dependencies for OpenAI Gym rendering
-RUN apt-get update && apt-get install -y \
     libgl1-mesa-glx \
     libxrender1 \
     libxext6 \
     libsm6 \
     x11-utils \
+    x11-apps \
+    && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
 # Upgrade pip to the latest version
@@ -28,11 +25,8 @@ COPY requirements.txt /app/
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Ensure ipywidgets are enabled for JupyterLab
-RUN jupyter labextension disable @jupyter-widgets/jupyterlab-manager || true
-
 # Expose Jupyter Lab's default port
 EXPOSE 8888
 
-# Command to start Jupyter Lab
-CMD ["jupyter", "lab", "--ip=0.0.0.0", "--port=8888", "--allow-root"]
+# Start Xvfb and Jupyter Lab
+CMD ["sh", "-c", "jupyter lab --ip=0.0.0.0 --port=8888 --allow-root"]

@@ -4,12 +4,12 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "8888:8888"  # For Jupyter Notebook/Lab
-      - "6006:6006"  # For TensorBoard
+      - "8888:8888"  # Jupyter Notebook/Lab
+      - "6006:6006"  # TensorBoard
     volumes:
       - .:/app
-      - /tmp/.X11-unix:/tmp/.X11-unix  # Mount the X11 socket
+      - /tmp/.X11-unix:/tmp/.X11-unix
     environment:
-      - DISPLAY=${DISPLAY}  # Pass the host's display variable
+      - DISPLAY=$DISPLAY
       - QT_X11_NO_MITSHM=1  # Fix shared memory issues
-    runtime: nvidia  # If using GPU
+    runtime: nvidia
