@@ -7,26 +7,63 @@ from collections import deque
 from utils import plane_sailing_next_position, rumbline_distance, calculate_bearing, calculate_relative_bearing
 
 
-class MarineEnv(gym.Env):
+class BaseShip:
+    def __init__(self, course, speed):
+        self.course = course
+        self.speed = speed
+
+
+class OwnShip(BaseShip):
+    def __init__(self, lat, lon, course, speed):
+        super().__init__(course, speed)
+        self.lat = lat
+        self.lon = lon
+
+    def set_course(self, course_change):
+        self.course += course_change
+
+    def next_position(self, time_interval):
+        self.lat, self.lon = plane_sailing_next_position(
+            [self.lat, self.lon],
+            self.course,
+            self.speed,
+            time_interval
+        )
+        return self.lat, self.lon
+
+    def distance(self, target_position):
+        return rumbline_distance([self.lat, self.lon], [target_position[0], target_position[1]])
+
+    def rel_bearing(self, target_position):
+        bearing_to_waypoint = calculate_bearing(self.lat, self.lon, target_position[0], target_position[1])
+        # calculate relative bearing
+        return calculate_relative_bearing(self.course, bearing_to_waypoint)
+
+    def __call__(self, *args, **kwargs):
+        return [self.lat, self.lon, self.course, self.speed]
+
+
+class WpMarineEnv(gym.Env):
     def __init__(self, time_scale=60, training=False):
-        super(MarineEnv, self).__init__()
+        super().__init__()
         # Define action space (3 discrete actions)
         self.action_space = spaces.Discrete(3)
         self.training = training
+        self.own_ship = OwnShip(30.25, 100.25, 23, 15)
 
-        # Define observation space: [lat, lon, course, speed]
+        # Def lat and lon bounds
         self.lat_bounds = (30.0, 30.5)  # Example latitude bounds (30 NM range)
         self.lon_bounds = (100.0, 100.5)  # Example longitude bounds
 
+        # Define observation space: [course, speed]
         self.observation_space = spaces.Box(
-            low=np.array([self.lat_bounds[0], self.lon_bounds[0], 0, 0, -180, 0]),
-            high=np.array([self.lat_bounds[1], self.lon_bounds[1], 360, 20, 180, 50]),
+            low=np.array([0, 0, -180, 0]),
+            high=np.array([360, 20, 180, 50]),
             dtype=np.float64
         )
 
         # Initialize the state
-        self.state = np.array(
-            [30.1, 100.1, 45.0, 15.0, 23, 15])  # [lat, lon, course, speed in knots, relative bearing to wp, distance to wp]
+        self.state = np.zeros(4)  # [course, speed in knots, relative bearing to wp, distance to wp]
         self.time_scale = time_scale  # How much to scale simulation time (1x = real time)
         self.real_world_dt = 1 / 60.0  # Real-world time step (1 minute)
 
@@ -36,7 +73,7 @@ class MarineEnv(gym.Env):
 
         # Define waypoint
         self.waypoint = np.array([30.4, 100.25])  # Example waypoint (lat, lon)
-        self.waypoint_reach_threshold = 0.01  # Limit considered reaching of waypoint
+        self.waypoint_reach_threshold = 0.003  # Limit considered reaching of waypoint
         self.waypoints = deque([])
 
         # Pygame setup
@@ -56,7 +93,8 @@ class MarineEnv(gym.Env):
         return px, py
 
     def step(self, action):
-        lat, lon, course, speed, previous_rel_wp_bearing, previous_wp_distance = self.state
+        # extract own ship params from the current state
+        course, speed, previous_rel_wp_bearing, previous_wp_distance = self.state
 
         # Update based on action
         if action == 0:  # Turn port (left) by 5 degrees
@@ -66,23 +104,22 @@ class MarineEnv(gym.Env):
         elif action == 2:  # Keep course and speed
             pass
 
-        # Update position using the plane sailing method
-        lat, lon = plane_sailing_next_position([lat, lon], course, speed, time_interval=self.sim_dt)
+        # set the course
+        self.own_ship.set_course(course)
 
+        lat, lon = self.own_ship.next_position(time_interval=self.sim_dt)
         # Clip latitude and longitude to bounds
         lat = np.clip(lat, self.lat_bounds[0], self.lat_bounds[1])
         lon = np.clip(lon, self.lon_bounds[0], self.lon_bounds[1])
+        self.own_ship.lat, self.own_ship.lon = lat, lon
 
         # Calculate distance to waypoint
-        distance_to_waypoint = rumbline_distance([lat, lon], [self.waypoint[0], self.waypoint[1]])
-
-        # Calculate bearing to the waypoint
-        bearing_to_waypoint = calculate_bearing(lat, lon, self.waypoint[0], self.waypoint[1])
-        # calculate relative bearing
-        rel_wp_bearing = calculate_relative_bearing(course, bearing_to_waypoint)
+        distance_to_waypoint = self.own_ship.distance([self.waypoint[0], self.waypoint[1]])
+        # Calculate relative bearing to wp
+        rel_wp_bearing = self.own_ship.rel_bearing([self.waypoint[0], self.waypoint[1]])
 
         # Update state
-        self.state = np.array([lat, lon, course, speed, rel_wp_bearing, distance_to_waypoint])
+        self.state = np.array([course, speed, rel_wp_bearing, distance_to_waypoint])
         self.total_sim_time += self.sim_dt  # Increment simulated time
 
         # Reward Initialization
@@ -144,25 +181,32 @@ class MarineEnv(gym.Env):
             np.random.seed(seed)
 
         # Randomly place the vessel within the bounds
-        random_lat = np.random.uniform(self.lat_bounds[0], self.lat_bounds[1])
-        random_lon = np.random.uniform(self.lon_bounds[0], self.lon_bounds[1])
+        # random_lat = np.random.uniform(self.lat_bounds[0], self.lat_bounds[1])
+        # random_lon = np.random.uniform(self.lon_bounds[0], self.lon_bounds[1])
+
+        # fix the vessel in the middle of the observation space
+        lat = (self.lat_bounds[0] + self.lat_bounds[1]) / 2
+        lon = (self.lon_bounds[0] + self.lon_bounds[1]) / 2
+        self.own_ship.lat, self.own_ship.lon = lat, lon
+
         random_course = np.random.uniform(0, 360)  # Random course in degrees
         random_speed = np.random.uniform(5, 15)  # Random speed between 5 and 15 knots
-
+        self.own_ship.course = random_course
+        self.own_ship.speed = random_speed
         # Randomly place the waypoint, ensuring it is not too close to the vessel
         while True:
             waypoint_lat = np.random.uniform(self.lat_bounds[0], self.lat_bounds[1])
             waypoint_lon = np.random.uniform(self.lon_bounds[0], self.lon_bounds[1])
-            distance_to_waypoint = rumbline_distance([random_lat, random_lon], [waypoint_lat, waypoint_lon])
+            distance_to_waypoint = rumbline_distance([lat, lon], [waypoint_lat, waypoint_lon])
             if distance_to_waypoint > 5.0 and distance_to_waypoint < 7.0:  # Ensure waypoint is 5 NM to 7 NM away from the vessel
                 break
         # calculate relative bearing and distance to wp
-        true_wp_bearing = calculate_bearing(random_lat, random_lon, waypoint_lat, waypoint_lon)
+        true_wp_bearing = calculate_bearing(lat, lon, waypoint_lat, waypoint_lon)
         relative_wp_bearing = calculate_relative_bearing(random_course, true_wp_bearing)
-        
+
         # Update the state and waypoint
         self.state = np.array(
-            [random_lat, random_lon, random_course, random_speed, relative_wp_bearing, distance_to_waypoint])
+            [lat, lon, random_course, random_speed, relative_wp_bearing, distance_to_waypoint])
         self.waypoint = np.array([waypoint_lat, waypoint_lon])
 
         # generate additional waypoints if not in training
@@ -175,9 +219,9 @@ class MarineEnv(gym.Env):
                     if distance_to_waypoint > 5.0 and distance_to_waypoint < 7.0:  # Ensure waypoint is 5 NM to 7 NM away from the last wp
                         waypoint_lat, waypoint_lon = random_lat, random_lon
                         self.waypoints.append((waypoint_lat, waypoint_lon))
-                        break 
-                
-        # Reset simulation time
+                        break
+
+                        # Reset simulation time
         self.total_sim_time = 0.0
 
         return self.state, {}
@@ -225,7 +269,7 @@ class MarineEnv(gym.Env):
         for wp in self.waypoints:
             waypoint_px, waypoint_py = self.latlon_to_pixels(*wp)
             pygame.draw.circle(self.window, (100, 255, 100), (waypoint_px, waypoint_py), self.vessel_size)
-            
+
         # Update the display
         pygame.display.flip()
         self.clock.tick(30)  # Limit to 30 FPS
