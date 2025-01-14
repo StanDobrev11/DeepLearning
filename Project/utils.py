@@ -1,10 +1,44 @@
 import numpy as np
 
 
+def plane_sailing_position(start_point, bearing, distance):
+    # Convert lat/lon and course to radians
+    lat1, lon1 = np.radians(start_point)
+    bearing = np.radians(bearing)
+
+    # Convert distance in nautical miles to degrees of latitude/longitude
+    distance_rad = np.radians(distance / 60)  # Distance in radians (1 degree = 60 NM)
+
+    # Calculate the change in latitude (delta_lat)
+    delta_lat = distance_rad * np.cos(bearing) * np.cos(lat1)
+
+    # Calculate the new latitude
+    new_lat = lat1 + delta_lat
+
+    # Calculate the mean latitude (average of the original and new latitude)
+    mean_lat = (lat1 + new_lat) / 2
+
+    # Calculate the change in longitude (delta_lon)
+    if np.cos(mean_lat) != 0:
+        delta_lon = distance_rad * np.sin(bearing) / np.cos(mean_lat)
+    else:
+        delta_lon = 0
+
+    # Calculate the new longitude
+    new_lon = lon1 + delta_lon
+
+    # Convert the new latitude and longitude back to degrees
+    new_lat = np.degrees(new_lat)
+    new_lon = np.degrees(new_lon)
+
+    return np.array([new_lat, new_lon])
+
+
 def plane_sailing_next_position(start_point, course, speed, time_interval=6):
     """
     Calculates the next position based on a starting point, course, and distance using plane sailing approximation.
 
+    :param time_interval: time interval in minutes
     :param start_point: tuple (lat, lon) in degrees
     :param course: course (bearing) in degrees
     :param distance: distance in nautical miles
@@ -15,7 +49,7 @@ def plane_sailing_next_position(start_point, course, speed, time_interval=6):
     course = np.radians(course)
 
     # Calculate distance
-    distance = speed * time_interval
+    distance = speed * time_interval / 60
 
     # Convert distance in nautical miles to degrees of latitude/longitude
     distance_rad = np.radians(distance / 60)  # Distance in radians (1 degree = 60 NM)
