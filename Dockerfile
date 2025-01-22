@@ -1,11 +1,11 @@
 # Use the TensorFlow GPU image as the base
-FROM tensorflow/tensorflow:2.10.1-gpu
+FROM tensorflow/tensorflow:latest-gpu-jupyter
 
 # Set the working directory
 WORKDIR /app
 
 # Install system dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     python3-pip \
     libgl1-mesa-glx \
     libxrender1 \
@@ -13,6 +13,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libsm6 \
     x11-utils \
     x11-apps \
+    git \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 

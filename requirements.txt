@@ -14,7 +14,10 @@ torcheval
 gymnasium
 pygame
 swig
+cmake
 tensordict
 torchrl
 torchvision
 torchaudio
+stable-baselines3[extra]
+rl_zoo3
