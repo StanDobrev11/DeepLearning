@@ -119,7 +119,7 @@ class OwnShip(BaseShip):
     def calculate_distance(self, target: Union['Target', 'StaticObject', 'Tuple']) -> float:
         return rumbline_distance(
             [self.lat, self.lon],
-            [target[0], target[1]] if type(target) == tuple else [target.lat, target.lon])
+            [target[0], target[1]] if isinstance(target, tuple) else [target.lat, target.lon])
 
     def calculate_relative_course(self, target: 'Target') -> float:
         """
@@ -162,21 +162,15 @@ class OwnShip(BaseShip):
         if relative_speed == 0:  # Avoid division by zero
             return target.distance, float('inf')  # CPA is current distance, TCPA is infinite
 
-        reversed_true_bearing = (180 + self.calculate_true_bearing(target)) % 360
-        beta = target.relative_course - reversed_true_bearing
+        beta_rad = self._calculate_beta(target)
 
-        # Normalize beta within [-180, 180] to avoid errors
-        beta = (beta + 180) % 360 - 180
-        beta_rad = np.radians(beta)
-
-        cpa = abs(target.distance * np.sin(beta_rad))  # Always positive CPA
+        cpa = abs(self._calculate_cpa(target, beta_rad))  # Always positive CPA
 
         tcpa = (target.distance * np.cos(beta_rad)) / relative_speed
 
         return cpa, max(tcpa * 60, 0)  # Ensure TCPA is non-negative
 
-    @staticmethod
-    def calculate_bcr_tbc(target):
+    def calculate_bcr_tbc(self, target):
         """
         Calculate Bow Crossing Range (BCR) and Time to Bow Crossing (TBC) with edge case handling.
         """
@@ -187,7 +181,7 @@ class OwnShip(BaseShip):
         theta = (theta + 180) % 360 - 180
         theta_rad = np.radians(theta)
 
-        cpa = target.cpa
+        cpa = self._calculate_cpa(target, self._calculate_beta(target))
         tcpa = target.tcpa / 60  # Convert to hours
 
         # Handle cases where theta is too small (parallel motion)
@@ -203,9 +197,24 @@ class OwnShip(BaseShip):
         else:
             delta_t = (cpa / np.tan(theta_rad)) / relative_speed
 
-        tbc = max(tcpa + delta_t, 0)  # Ensure TBC is non-negative
+        tbc = tcpa + delta_t  # Initial calculation
 
-        return bcr, tbc * 60  # Convert back to minutes
+        return bcr, max(tbc * 60, 0)  # Convert back to minutes, ensure non-negative
+
+    def _calculate_beta(self, target: 'Target') -> float:
+        """Beta is the angle between the relative course and the reversed true bearing"""
+
+        reversed_true_bearing = (180 + self.calculate_true_bearing(target)) % 360
+        beta = target.relative_course - reversed_true_bearing
+
+        # Normalize beta within [-180, 180] to avoid errors
+        beta = (beta + 180) % 360 - 180
+        beta_rad = np.radians(beta)
+        return beta_rad
+
+    @staticmethod
+    def _calculate_cpa(target: 'Target', beta: float) -> float:
+        return target.distance * np.sin(beta)
 
     @staticmethod
     def set_responsibilities(target: 'Target') -> None:

@@ -1,9 +1,8 @@
-from typing import Tuple, Dict, Optional, Any
+from typing import Tuple, Optional, Any
 
 import gymnasium as gym
 from gymnasium import spaces
 from gymnasium.core import ObsType
-from gymnasium.spaces import flatten_space
 from gymnasium.spaces.utils import flatten
 
 import numpy as np
@@ -73,7 +72,7 @@ class MarineEnv(gym.Env):
         })
 
         # initialize the state
-        self.observation = np.zeros(flatten_space(self.observation_space).shape)
+        self.observation = None
 
         # initialize own ship
         self.own_ship = OwnShip()
@@ -218,6 +217,7 @@ class MarineEnv(gym.Env):
         if self.training_stage == 0:
             pass
 
+        # state for wp tracking training
         elif self.training_stage == 1:  # training for wp tracking, no targets
 
             # placing the vessel in the center of the env
@@ -295,5 +295,7 @@ if __name__ == '__main__':
     env.own_ship.max_speed = 20
     env.own_ship.detected_targets = [target_ship]
     print(env.step((0, 0)))
-    print(env.step((0, 0)))
-    print(env.step((0, 0)))
+    print(env.step((0.2, 0.2)))
+    print(env.step((0.8, 0)))
+    print(env.step((0.8, 0)))
+    print(env.step((0.0, 0)))
