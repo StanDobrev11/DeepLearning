@@ -75,7 +75,7 @@ class Target(BaseShip):
         self.cpa: float = 0.0  # CPA (closest point of approach) between own ship and target
         self.tcpa: float = 0.0  # time to CPA
         self.bcr: float = 0.0  # own ship bow crossing range of the target. If positive - crossing bow of target,
-        self.tbcr: float = 0.0  # time to BCR
+        self.tbc: float = 0.0  # time to BCR
         # else crossing the stern
         self.stand_on: bool = True  # defines if the target gives way or is a stand-on vessel
         self.is_dangerous: bool = False  # defines the status of the target
@@ -88,7 +88,7 @@ class Target(BaseShip):
                 f'CPA: {self.cpa}\n'
                 f'TCPA: {self.tcpa}\n'
                 f'BCR: {self.bcr}\n'
-                f'TBCR: {self.tbcr}')
+                f'TBC: {self.tbc}')
 
 
 class OwnShip(BaseShip):
@@ -242,7 +242,7 @@ class OwnShip(BaseShip):
         target.relative_bearing = self.calculate_relative_bearing(target)
         target.distance = self.calculate_distance((target.lat, target.lon))
         target.cpa, target.tcpa = self.calculate_cpa_tcpa(target)
-        target.bcr, target.tbcr = self.calculate_bcr_tbc(target)
+        target.bcr, target.tbc = self.calculate_bcr_tbc(target)
         target.is_dangerous = self.set_dangerous(target)
 
     def _relative_position_components(self, target: 'Target') -> Tuple[float, float]:
@@ -280,4 +280,4 @@ if __name__ == '__main__':
     print(f'Relative bearing: {own_ship.calculate_relative_bearing(target_ship)}')
     print(f'Relative course: {own_ship.calculate_relative_course(target_ship)}')
     print(f'CPA / TCPA :{own_ship.calculate_cpa_tcpa(target_ship)}')
-    print(f'BCR / TBCR: {own_ship.calculate_bcr_tbc(target_ship)}')
+    print(f'BCR / TBC: {own_ship.calculate_bcr_tbc(target_ship)}')

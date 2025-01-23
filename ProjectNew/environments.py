@@ -1,4 +1,4 @@
-from typing import Tuple, Optional, Any
+from typing import Tuple, Optional, Any, Dict, List
 
 import gymnasium as gym
 from gymnasium import spaces
@@ -12,6 +12,10 @@ from ProjectNew.vessels import OwnShip, Target, StaticObject
 
 class MarineEnv(gym.Env):
     metadata = {'render_modes': ['human', 'rgb_array'], 'render_fps': 30}
+
+    OWN_SHIP_PARAMS: List[str] = []
+    WP_PARAMS: List[str] = []
+    TARGET_PARAMS: List[str] = []
 
     def __init__(
             self,
@@ -28,6 +32,7 @@ class MarineEnv(gym.Env):
             total_targets: Optional[int] = None
     ):
         super(MarineEnv, self).__init__()
+        self.step_counter = 0
         self.training_stage = training_stage
         self.total_targets = total_targets
 
@@ -67,7 +72,7 @@ class MarineEnv(gym.Env):
                     'target_relative_course': spaces.Box(low=0, high=360, shape=(), dtype=np.float32),
                     'target_relative_speed': spaces.Box(low=0, high=50, shape=(), dtype=np.float32),
                     'target_speed': spaces.Box(low=-10, high=20, shape=(), dtype=np.float32),
-                    'tbcr': spaces.Box(low=-10, high=100, shape=(), dtype=np.float32),
+                    'tbc': spaces.Box(low=-10, high=100, shape=(), dtype=np.float32),
                     'tcpa': spaces.Box(low=-60, high=100, shape=(), dtype=np.float32),
                 }) for _ in range(3)  # assuming 3 targets are considered dangerous
             ])
@@ -83,6 +88,11 @@ class MarineEnv(gym.Env):
         self.waypoint = StaticObject()  # 2 elements, latitude and longitude
         self.waypoint_reach_threshold = waypoint_reach_threshold  # in nautical miles, terminates an episode
 
+        # extract params
+        self.OWN_SHIP_PARAMS = [key for key in self.observation_space['own_ship'].spaces.keys()][:2]
+        self.WP_PARAMS = [key for key in self.observation_space['own_ship'].spaces.keys()][2:]
+        self.TARGET_PARAMS = [key for key in self.observation_space['targets'][0].spaces.keys()]
+
         # pygame setup
         assert render_mode is None or render_mode in self.metadata["render_modes"], \
             f"Invalid render_mode: {render_mode}. Available modes: {self.metadata['render_modes']}"
@@ -94,7 +104,28 @@ class MarineEnv(gym.Env):
         self.clock = None
         self.vessel_size = 5  # Vessel radius in pixels
 
+    @property
+    def wp_distance(self) -> float:
+        return self.own_ship.calculate_distance(self.waypoint)
+
+    @property
+    def wp_eta(self) -> float:
+        # will be recalculated when calling reset()
+        return 60 * self.wp_distance / self.own_ship.speed
+
+    @property
+    def wp_relative_bearing(self) -> float:
+        return self.own_ship.calculate_relative_bearing(self.waypoint)
+
+    @property
+    def wp_target_eta(self) -> float:
+        # will ALWAYS be calculated when handling the state
+        return 0.0
+
     def step(self, action):
+
+        # increment the step counter
+        self.step_counter += 1
 
         # extract own ship params from the current state
         course, speed, last_wp_distance, last_wp_eta, last_wp_relative_bearing, last_tgt_eta = self.observation[:6]
@@ -118,27 +149,15 @@ class MarineEnv(gym.Env):
             speed_change = action[1] * self.max_speed_change
 
         # update and apply own ship parameters
-        course = (course + course_change) % 360
-        speed += speed_change
-        self.own_ship.course = course
-        self.own_ship.speed = speed
+        self.own_ship.course = (course + course_change) % 360
+        self.own_ship.speed += speed_change
 
         # update next position
         self.own_ship.update_position(time_interval=self.timescale, clip_lat=self.lat_bounds, clip_lon=self.lon_bounds)
 
-        # calculate current distance and current relative bearing to wp
-        current_wp_distance = self.own_ship.calculate_distance(self.waypoint)
-        current_wp_rel_bearing = self.own_ship.calculate_relative_bearing(self.waypoint)
-
         # generate own state data
-        own_ship_data = {
-            "course": course,
-            "speed": speed,
-            "wp_distance": current_wp_distance,
-            'wp_eta': (current_wp_distance / speed) * 60,
-            "wp_relative_bearing": current_wp_rel_bearing,
-            'wp_target_eta': last_tgt_eta - self.timescale
-        }
+        own_ship_data = self._generate_own_ship_data()
+        own_ship_data['wp_target_eta'] = last_tgt_eta - self.timescale
 
         if self.own_ship.detected_targets:
             # Move/update all detected targets
@@ -152,53 +171,16 @@ class MarineEnv(gym.Env):
             )[:3]
 
             # initialize empty targets list with zero-filled entries
-            targets_data = [
-                {
-                    'bcr': 0.0,
-                    'cpa': 0.0,
-                    'target_course': 0.0,
-                    'target_distance': 0.0,
-                    'target_relative_bearing': 0.0,
-                    'target_relative_course': 0.0,
-                    'target_relative_speed': 0.0,
-                    'target_speed': 0.0,
-                    'tbcr': 0.0,
-                    'tcpa': 0.0,
-                } for _ in range(3)
-            ]
+            targets_data = self._generate_zero_target_data(3)
 
             # fill in detected targets (up to 3)
             for i, target in enumerate(self.own_ship.dangerous_targets):
                 target.is_dangerous = True
-                targets_data[i] = {
-                    'bcr': target.bcr,
-                    'cpa': target.cpa,
-                    'target_course': target.course,
-                    'target_distance': target.distance,
-                    'target_relative_bearing': target.relative_bearing,
-                    'target_relative_course': target.relative_course,
-                    'target_relative_speed': target.relative_speed,
-                    'target_speed': target.speed,
-                    'tbcr': target.tbcr,
-                    'tcpa': target.tcpa,
-                }
+                targets_data[i] = self._generate_actual_target_data(target)
 
         else:
             # no detected targets, return all-zero target data
-            targets_data = [
-                {
-                    'bcr': 0.0,
-                    'cpa': 0.0,
-                    'target_course': 0.0,
-                    'target_distance': 0.0,
-                    'target_relative_bearing': 0.0,
-                    'target_relative_course': 0.0,
-                    'target_relative_speed': 0.0,
-                    'target_speed': 0.0,
-                    'tbcr': 0.0,
-                    'tcpa': 0.0,
-                } for _ in range(3)
-            ]
+            targets_data = self._generate_zero_target_data(3)
 
         # construct the final observation
         raw_observation = {
@@ -210,9 +192,61 @@ class MarineEnv(gym.Env):
 
         return self.observation
 
+    def calculate_reward(self, previous_state: ObsType, current_state: ObsType) -> tuple[float, bool, bool]:
+        """ method to calculate the reward """
+
+        previous_data = self._generate_observation_dict(previous_state)
+        current_data = self._generate_observation_dict(current_state)
+
+        terminated, truncated = False, False
+        reward = 0.0
+
+        # TODO reward for wp tracking, training stage 1
+        if self.training_stage == 1:
+            # reaching the wp -> large reward and episode termination
+            if self.wp_distance < self.waypoint_reach_threshold:
+                return 1000.0, True, False
+
+            # Distance-Based Reward or Penalty
+            previous_wp_distance = previous_data['own_ship']['wp_distance']
+            current_wp_distance = current_data['own_ship']['wp_distance']
+
+            distance_change = previous_wp_distance - current_wp_distance
+            # reward += max(-1.0, distance_change * 10)  # Reward proportional to distance improvement
+            reward += distance_change * 10 if distance_change > 0 else -1
+
+            # Bearing Alignment Reward
+            current_wp_relative_bearing = current_data['own_ship']['wp_relative_bearing']
+            if abs(current_wp_relative_bearing) <= 1:
+                reward += 5.0
+            elif abs(current_wp_relative_bearing) <= 5:
+                reward += 2.0  # Strong reward for near-perfect alignment
+            elif abs(current_wp_relative_bearing) <= 15:
+                reward += 1.0  # Moderate reward for good alignment
+            elif abs(current_wp_relative_bearing) <= 30:
+                reward += 0.5  # Small reward for decent alignment
+            else:
+                reward -= 0.5  # Penalty for poor alignment
+
+            # Reward for Improving Bearing Alignment
+            previous_wp_relative_bearing = previous_data['own_ship']['wp_relative_bearing']
+            bearing_change = abs(previous_wp_relative_bearing) - abs(current_wp_relative_bearing)
+            reward += max(-0.25, bearing_change * 0.25)  # Small reward for improving alignment
+
+            # TODO reward for keeping ETA steady
+
+        return reward, terminated, truncated
+
+        # TODO reward for training stage 2, one target
+        # TODO reward for training stage 3, two targets
+        # TODO reward for training stage 4, three targets
+
     def reset(self, seed=None, options=None) -> tuple[ObsType, dict[str, Any]]:
         # seed for random number generator
         super().reset(seed=seed)
+
+        # reset the step counter
+        self.step_counter = 0
 
         own_ship_data = {}
         targets_data = {}
@@ -250,27 +284,11 @@ class MarineEnv(gym.Env):
 
             self.waypoint.lat, self.waypoint.lon = waypoint_lat, waypoint_lon
 
-            own_ship_data = {
-                "course": self.own_ship.course,
-                "speed": self.own_ship.speed,
-                "wp_distance": self.own_ship.calculate_distance(self.waypoint),
-                'wp_eta': target_eta,
-                "wp_relative_bearing": self.own_ship.calculate_relative_bearing(self.waypoint),
-                'wp_target_eta': target_eta,
-            }
+            own_ship_data = self._generate_own_ship_data()
+            own_ship_data['wp_eta'] = target_eta
+            own_ship_data['wp_target_eta'] = target_eta
 
-            targets_data = [{
-                'bcr': 0.0,
-                'cpa': 0.0,
-                'target_course': 0.0,
-                'target_distance': 0.0,
-                'target_relative_bearing': 0.0,
-                'target_relative_course': 0.0,
-                'target_relative_speed': 0.0,
-                'target_speed': 0.0,
-                'tbcr': 0.0,
-                'tcpa': 0.0,
-            } for _ in range(3)]
+            targets_data = self._generate_zero_target_data(3)
 
         # TODO set the state for training with targets
         else:
@@ -285,6 +303,49 @@ class MarineEnv(gym.Env):
 
         return self.observation, {}
 
+    def _generate_own_ship_data(self) -> dict[str, float]:
+        result = dict()
+        for key in self.OWN_SHIP_PARAMS:
+            result[key] = getattr(self.own_ship, key)
+        for key in self.WP_PARAMS:
+            result[key] = getattr(self, key)
+
+        return result
+
+    def _generate_zero_target_data(self, targets_count: int) -> list[dict[str, float]]:
+        result = []
+        for _ in range(targets_count):
+            spaces_dict = {}
+            for key in self.TARGET_PARAMS:
+                spaces_dict[key] = 0.0
+
+            result.append(spaces_dict)
+
+        return result
+
+    def _generate_actual_target_data(self, target: 'Target') -> Dict[str, float]:
+        result = dict()
+        for key in self.TARGET_PARAMS:
+            attr = key.removeprefix('target_')
+            result[key] = getattr(target, attr)
+
+        return result
+
+    def _generate_observation_dict(self, observation: ObsType) -> dict[str, dict[str, Any]]:
+        idx = 0
+        own_ship_data = dict()
+        targets_data = dict()
+        for key in self.OWN_SHIP_PARAMS:
+            own_ship_data[key] = observation[idx]
+            idx += 1
+        for key in self.WP_PARAMS:
+            own_ship_data[key] = observation[idx]
+            idx += 1
+        for key in self.TARGET_PARAMS:
+            targets_data[key] = observation[idx]
+            idx += 1
+        return {'own_ship': own_ship_data, 'targets': targets_data}
+
 
 if __name__ == '__main__':
     env = MarineEnv(continuous=True)
@@ -296,7 +357,7 @@ if __name__ == '__main__':
     # print(type(env.action_space))
     # print(env.step((0.7, 0.5)))
     # print(env.observation)
-    target_ship = Target(position=(0.05, 0.05), course=0, speed=5, min_speed=5, max_speed=20)
+    target_ship = Target(position=(0.05, 0.05), course=270, speed=5, min_speed=5, max_speed=20)
     env.observation[0] = 0
     env.observation[1] = 10
     env.own_ship.lat = 0.0
