@@ -103,6 +103,8 @@ class OwnShip(BaseShip):
             cpa_limit: float = 0.1,
             tcpa_limit: float = 3,
 
+            constant_speed: float = 15.0,  # fixed speed to reach wp for eta calculations
+
             # inherits keyword arguments
             # this inherits positional arguments
             *args,
@@ -113,6 +115,7 @@ class OwnShip(BaseShip):
         self.tcpa_threshold = tcpa_threshold
         self.cpa_limit = cpa_limit
         self.tcpa_limit = tcpa_limit
+        self.constant_speed = constant_speed
         self.detected_targets: List['Target'] = []  # contains a list of all targets in range
         self.dangerous_targets: List['Target'] = []  # contains the top 3 dangerous targets, ordered by CPA and TCPA
 

@@ -53,7 +53,9 @@ class MarineEnv(gym.Env):
                 'course': spaces.Box(low=0, high=360, shape=(), dtype=np.float32),
                 'speed': spaces.Box(low=-10, high=20, shape=(), dtype=np.float32),
                 'wp_distance': spaces.Box(low=0, high=env_range, shape=(), dtype=np.float32),
+                'wp_eta': spaces.Box(low=0, high=300, shape=(), dtype=np.float32),
                 'wp_relative_bearing': spaces.Box(low=-180, high=180, shape=(), dtype=np.float32),
+                'wp_target_eta': spaces.Box(low=0, high=300, shape=(), dtype=np.float32),
             }),
             'targets': spaces.Tuple([
                 spaces.Dict({
@@ -95,7 +97,7 @@ class MarineEnv(gym.Env):
     def step(self, action):
 
         # extract own ship params from the current state
-        course, speed, last_wp_distance, last_wp_relative_bearing = self.observation[:4]
+        course, speed, last_wp_distance, last_wp_eta, last_wp_relative_bearing, last_tgt_eta = self.observation[:6]
 
         # update the params based on action
         if 'Discrete' in str(type(env.action_space)):
@@ -133,7 +135,9 @@ class MarineEnv(gym.Env):
             "course": course,
             "speed": speed,
             "wp_distance": current_wp_distance,
+            'wp_eta': (current_wp_distance / speed) * 60,
             "wp_relative_bearing": current_wp_rel_bearing,
+            'wp_target_eta': last_tgt_eta - self.timescale
         }
 
         if self.own_ship.detected_targets:
@@ -226,6 +230,9 @@ class MarineEnv(gym.Env):
             # random initial speed, minimum 7 kn
             self.own_ship.speed = np.random.uniform(low=7, high=self.own_ship.max_speed)
 
+            # fixed speed to reach wp
+            self.own_ship.constant_speed = 15
+
             # random initial course
             self.own_ship.course = np.random.uniform(low=0, high=360)
 
@@ -238,13 +245,18 @@ class MarineEnv(gym.Env):
                 if 3.0 < distance_to_waypoint < 20:
                     break
 
+            # calculate target eta, calculated using initial speed
+            target_eta = (distance_to_waypoint / self.own_ship.speed) * 60
+
             self.waypoint.lat, self.waypoint.lon = waypoint_lat, waypoint_lon
 
             own_ship_data = {
                 "course": self.own_ship.course,
                 "speed": self.own_ship.speed,
                 "wp_distance": self.own_ship.calculate_distance(self.waypoint),
+                'wp_eta': target_eta,
                 "wp_relative_bearing": self.own_ship.calculate_relative_bearing(self.waypoint),
+                'wp_target_eta': target_eta,
             }
 
             targets_data = [{
@@ -284,7 +296,7 @@ if __name__ == '__main__':
     # print(type(env.action_space))
     # print(env.step((0.7, 0.5)))
     # print(env.observation)
-    target_ship = Target(position=(0.05, 0.05), course=270, speed=5, min_speed=5, max_speed=20)
+    target_ship = Target(position=(0.05, 0.05), course=0, speed=5, min_speed=5, max_speed=20)
     env.observation[0] = 0
     env.observation[1] = 10
     env.own_ship.lat = 0.0
@@ -294,8 +306,10 @@ if __name__ == '__main__':
     env.own_ship.min_speed = 5
     env.own_ship.max_speed = 20
     env.own_ship.detected_targets = [target_ship]
+    env.observation[5] = 60 * env.own_ship.calculate_distance(env.waypoint) / env.own_ship.speed
+    env.observation[2] = env.observation[5]
     print(env.step((0, 0)))
-    print(env.step((0.2, 0.2)))
-    print(env.step((0.8, 0)))
-    print(env.step((0.8, 0)))
+    print(env.step((0.0, 0.0)))
+    print(env.step((0.0, 0)))
+    print(env.step((0.0, 0)))
     print(env.step((0.0, 0)))
