@@ -23,7 +23,7 @@ class MarineEnv(gym.Env):
             initial_lat: float = 0.0,
             initial_lon: float = 0.0,
             env_range: int = 30,
-            timescale: int = 1,
+            timescale: int = 1 / 3,
             continuous: bool = False,
             max_turn_angle: int = 10,
             max_speed_change: float = 0.1,
@@ -157,6 +157,10 @@ class MarineEnv(gym.Env):
         # update and apply own ship parameters
         self.own_ship.course = (course + course_change) % 360
         self.own_ship.speed += speed_change
+        if self.own_ship.speed > 0:
+            self.own_ship.speed = min(self.own_ship.max_speed, self.own_ship.speed)
+        else:
+            self.own_ship.speed = max(self.own_ship.min_speed, self.own_ship.speed)
 
         # update next position
         self.own_ship.update_position(time_interval=self.timescale, clip_lat=self.lat_bounds, clip_lon=self.lon_bounds)
@@ -202,6 +206,12 @@ class MarineEnv(gym.Env):
         # assign the current observation
         self.observation = current_obs
 
+        # print('Debugging step:')
+        # print(self.observation[:6])
+        # print('Reward:', reward)
+        # print('Terminated, Truncated:', terminated, truncated)
+        # print('Steps:', self.step_counter)
+
         return self.observation, reward, terminated, truncated, info
 
     def calculate_reward(self, previous_obs: ObsType, current_obs: ObsType) -> tuple[float, bool, bool, dict[str, int]]:
@@ -229,13 +239,12 @@ class MarineEnv(gym.Env):
             current_wp_distance = current_data['own_ship']['wp_distance']
 
             distance_change = previous_wp_distance - current_wp_distance
-            # reward += max(-1.0, distance_change * 10)  # Reward proportional to distance improvement
-            reward += distance_change * 10 if distance_change > 0 else -1
+            reward += max(-1.0, distance_change * 10)  # Reward proportional to distance improvement
 
             # bearing alignment reward
             current_wp_relative_bearing = current_data['own_ship']['wp_relative_bearing']
             if abs(current_wp_relative_bearing) <= 1:
-                reward += 5.0
+                reward += 7.0
             elif abs(current_wp_relative_bearing) <= 5:
                 reward += 2.0  # Strong reward for near-perfect alignment
             elif abs(current_wp_relative_bearing) <= 15:
@@ -245,25 +254,6 @@ class MarineEnv(gym.Env):
             else:
                 reward -= 0.5  # Penalty for poor alignment
 
-
-            # course change reward
-            previous_relative_bearing = previous_data['own_ship']['wp_relative_bearing']
-            current_relative_bearing = current_data['own_ship']['wp_relative_bearing']
-
-            previous_course = previous_data['own_ship']['course']
-            current_course = current_data['own_ship']['course']
-
-            # Compute previous and current alignment error (how well the course aligns with the target)
-            previous_alignment_error = abs(previous_relative_bearing - previous_course)
-            current_alignment_error = abs(current_relative_bearing - current_course)
-
-            # Check if alignment error increased (ship turned away)
-            if current_alignment_error > previous_alignment_error:
-                reward -= (current_alignment_error - previous_alignment_error) * 0.1  # Penalty for moving away
-            else:
-                reward += (previous_alignment_error - current_alignment_error) * 0.1  # Reward for improving alignment
-
-
         # TODO reward for training stage 2, one target
         # TODO reward for training stage 3, two targets
         # TODO reward for training stage 4, three targets
@@ -272,30 +262,23 @@ class MarineEnv(gym.Env):
         current_eta = current_data['own_ship']['wp_eta']
         target_eta = current_data['own_ship']['wp_target_eta']
 
-        if -6 <= current_eta - target_eta <= 6:
+        if -2 <= current_eta - target_eta <= 2:
             reward += 0.1
         else:
-            reward -= 0.5
+            reward -= 1
 
         # if target_eta < -6:
         #     truncated = True
         #     return reward, terminated, truncated, info
 
         # Penalty for Going Out of Bounds
-        out_of_screen = self.own_ship.lat < self.lat_bounds[0] or self.own_ship.lat > self.lat_bounds[1] or \
-                        self.own_ship.lon < self.lon_bounds[0] or self.own_ship.lon > self.lon_bounds[1]
+        out_of_screen = self.own_ship.lat <= self.lat_bounds[0] or self.own_ship.lat >= self.lat_bounds[1] or \
+                        self.own_ship.lon <= self.lon_bounds[0] or self.own_ship.lon >= self.lon_bounds[1]
 
         if out_of_screen:
             reward -= 100.0  # Large penalty for leaving bounds
             terminated = True
             return reward, terminated, truncated, info
-        else:
-            # Small penalty for approaching bounds
-            lat_penalty = min(0.0, (self.own_ship.lat - self.lat_bounds[0]) * (
-                    self.lat_bounds[1] - self.own_ship.lat) * 0.01)
-            lon_penalty = min(0.0, (self.own_ship.lon - self.lon_bounds[0]) * (
-                    self.lon_bounds[1] - self.own_ship.lon) * 0.01)
-            reward += lat_penalty + lon_penalty
 
         return reward, terminated, truncated, info
 
@@ -337,10 +320,11 @@ class MarineEnv(gym.Env):
                 if 3.0 < distance_to_waypoint < 20:
                     break
 
+            # set the newly generated coordinates to the wp instance
+            self.waypoint.lat, self.waypoint.lon = waypoint_lat, waypoint_lon
+
             # calculate target eta, calculated using initial speed
             target_eta = self.wp_eta
-
-            self.waypoint.lat, self.waypoint.lon = waypoint_lat, waypoint_lon
 
             own_ship_data = self._generate_own_ship_data()
             own_ship_data['wp_eta'] = target_eta
@@ -503,24 +487,40 @@ if __name__ == '__main__':
     # print(flatten_space(env.observation_space))
     # print(env.observation)
     # print(env.own_ship)
-    print(env.reset())
+    # print(env.reset())
     # print(type(env.action_space))
     # print(env.step((0.7, 0.5)))
     # print(env.observation)
-    target_ship = Target(position=(0.05, 0.05), course=270, speed=5, min_speed=5, max_speed=20)
-    env.observation[0] = 0
-    env.observation[1] = 10
-    env.own_ship.lat = 0.0
-    env.own_ship.lon = 0.0
-    env.own_ship.course = 0.0
-    env.own_ship.speed = 10.0
-    env.own_ship.min_speed = 5
-    env.own_ship.max_speed = 20
-    env.own_ship.detected_targets = [target_ship]
-    env.observation[3] = env.wp_eta
-    env.observation[5] = env.observation[3]
-    env.step((0, 0))
-    print(env.step((0.0, 0.0)))
-    print(env.step((0.0, 0)))
-    print(env.step((0.0, 0)))
-    print(env.step((0.0, 0)))
+    # target_ship = Target(position=(0.05, 0.05), course=270, speed=5, min_speed=5, max_speed=20)
+    # env.observation[0] = 0
+    # env.observation[1] = 10
+    # env.own_ship.lat = 0.0
+    # env.own_ship.lon = 0.0
+    # env.own_ship.course = 0.0
+    # env.own_ship.speed = 10.0
+    # env.own_ship.min_speed = 5
+    # env.own_ship.max_speed = 20
+    # env.own_ship.detected_targets = [target_ship]
+    # env.observation[3] = env.wp_eta
+    # env.observation[5] = env.observation[3]
+    # env.step((0, 0))
+    # print(env.step((0.0, 0.0)))
+    # print(env.step((0.0, 0)))
+    # print(env.step((0.0, 0)))
+    # print(env.step((0.0, 0)))
+    env.reset()
+    total_reward = 0
+    for _ in range(1000):
+        state, reward, terminated, truncated, info = env.step((1, 1))
+        total_reward += reward
+
+        print(state)
+        print(reward)
+        print(total_reward)
+
+        if terminated or truncated:
+            print(info)
+            break
+
+    print('Total reward: {}'.format(total_reward))
+
