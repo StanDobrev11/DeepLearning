@@ -1,7 +1,7 @@
 from typing import Tuple, List, Optional, Union
 import numpy as np
 
-from ProjectNew.utils import plane_sailing_next_position, rumbline_distance, calculate_bearing, \
+from utils import plane_sailing_next_position, rumbline_distance, calculate_bearing, \
     calculate_relative_bearing
 
 
