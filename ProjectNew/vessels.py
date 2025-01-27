@@ -93,29 +93,8 @@ class Target(BaseShip):
 
 class OwnShip(BaseShip):
 
-    def __init__(
-            self,
-
-            cpa_threshold: float = 1.0,  # in nautical miles
-            tcpa_threshold: float = 12,  # in minutes
-
-            # the limits at witch the own ship is no longer considered "stand-on" and must act to avoid collision
-            cpa_limit: float = 0.1,
-            tcpa_limit: float = 3,
-
-            constant_speed: float = 15.0,  # fixed speed to reach wp for eta calculations
-
-            # inherits keyword arguments
-            # this inherits positional arguments
-            *args,
-            **kwargs,
-    ) -> None:
+    def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
-        self.cpa_threshold = cpa_threshold
-        self.tcpa_threshold = tcpa_threshold
-        self.cpa_limit = cpa_limit
-        self.tcpa_limit = tcpa_limit
-        self.constant_speed = constant_speed
         self.detected_targets: List['Target'] = []  # contains a list of all targets in range
         self.dangerous_targets: List['Target'] = []  # contains the top 3 dangerous targets, ordered by CPA and TCPA
 
@@ -214,7 +193,6 @@ class OwnShip(BaseShip):
         beta = (beta + 180) % 360 - 180
         beta_rad = np.radians(beta)
         return beta_rad
-
 
     @staticmethod
     def _calculate_cpa(target: 'Target', beta: float) -> float:

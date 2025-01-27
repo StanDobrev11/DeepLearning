@@ -23,25 +23,40 @@ class MarineEnv(gym.Env):
 
     def __init__(
             self,
+            # environment properties
             initial_lat: float = 0.0,
             initial_lon: float = 0.0,
-            env_range: int = 30,
-            timescale: int = 1 / 3,
+            env_range: int = 15,  # defines the size of the field
+            timescale: int = 1,  # defines the step size, defaults to 1 min step
             continuous: bool = False,
-            max_turn_angle: int = 10,
-            max_speed_change: float = 0.1,
+
+            max_turn_angle: int = 20,  # rate of turn defaults to 20 deg per min
+            max_speed_change: float = 0.5,  # rate of speed change knots / min
             waypoint_reach_threshold: float = 0.2,
             render_mode=None,
+            # target properties
+            cpa_threshold: float = 1.0,  # in nautical miles
+            tcpa_threshold: float = 12,  # in minutes
+            # the limits at witch the own ship is no longer considered "stand-on" and must act to avoid collision
+            cpa_limit: float = 0.1,
+            tcpa_limit: float = 3,
             training_stage: int = 1,  # defines different training stages, 0 for no training
             total_targets: Optional[int] = None
     ):
         super(MarineEnv, self).__init__()
-        self.env_range = env_range
+
         self.step_counter = 0
         self.training_stage = training_stage
         self.total_targets = total_targets
 
+        # target props
+        self.cpa_threshold = cpa_threshold  # minimum safe distance
+        self.tcpa_threshold = tcpa_threshold
+        self.cpa_limit = cpa_limit  # limit to act if own ship is stand-on
+        self.tcpa_limit = tcpa_limit
+
         # initialize the environment bounds
+        self.env_range = env_range
         self.lat_bounds: Tuple[float, float] = (initial_lat, initial_lat + env_range / 60)
         self.lon_bounds: Tuple[float, float] = (initial_lon, initial_lon + env_range / 60)
 
@@ -51,8 +66,8 @@ class MarineEnv(gym.Env):
         # initialize action space
         if continuous:
             # the agent can continuously adjust course and speed
-            self.max_turn_angle = max_turn_angle  # scaling the turn
-            self.max_speed_change = max_speed_change  # scaling the speed change
+            self.max_turn_angle = max_turn_angle * timescale  # scaling the turn
+            self.max_speed_change = max_speed_change * timescale  # scaling the speed change
             self.action_space = spaces.Box(low=np.array([-1, -1]), high=np.array([1, 1]), dtype=np.float32)
         else:
             self.action_space = spaces.Discrete(5)
@@ -81,7 +96,7 @@ class MarineEnv(gym.Env):
             f"Invalid render_mode: {render_mode}. Available modes: {self.metadata['render_modes']}"
         self.render_mode = render_mode
 
-        self.window_size = 600  # Pixels for visualization
+        self.window_size = 800  # Pixels for visualization
         self.scale = self.window_size / ((self.lat_bounds[1] - self.lat_bounds[0]) * 60)  # Pixels per NM
         self.window = None
         self.clock = None
@@ -277,12 +292,12 @@ class MarineEnv(gym.Env):
             # iterate over each target and modify the reward
             for i, target in enumerate(self.own_ship.dangerous_targets):
                 # huge penalty for collision
-                if target.distance < self.own_ship.cpa_limit:
+                if target.distance < self.cpa_limit:
                     reward -= 100
                     terminated = True
 
                 # penalty for CPA
-                if target.cpa < abs(self.own_ship.cpa_threshold):
+                if target.cpa < abs(self.cpa_threshold):
                     reward -= 1 % i if i > 0 else 1  # for less dangerous targets, less penalty
                 else:
                     reward += 1 % i if i > 0 else 1
@@ -399,7 +414,7 @@ class MarineEnv(gym.Env):
             self.own_ship.lat, self.own_ship.lon = random.choice(corners)
 
             # place the waypoint
-            self.waypoint.lat, self.waypoint.lon = place_waypoint(22, 30)
+            self.waypoint.lat, self.waypoint.lon = place_waypoint(7, 12)
 
             target_eta = self.wp_eta
             own_ship_data = self._generate_own_ship_data()
