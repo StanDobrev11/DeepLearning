@@ -47,10 +47,10 @@ class BaseShip:
 
         return self.lat, self.lon
 
-    def calculate_true_bearing(self, target: 'Target') -> float:
+    def calculate_true_bearing(self, target: ['Target', 'StaticObject']) -> float:
         return calculate_bearing(self.lat, self.lon, target.lat, target.lon)
 
-    def calculate_relative_bearing(self, target: Optional[Union['Target', 'StaticObject', 'OwnShip']]) -> float:
+    def calculate_relative_bearing(self, target: ['Target', 'StaticObject', 'OwnShip']) -> float:
         true_bearing = self.calculate_true_bearing(target)
         return calculate_relative_bearing(self.course, true_bearing)
 
@@ -214,6 +214,7 @@ class OwnShip(BaseShip):
         beta = (beta + 180) % 360 - 180
         beta_rad = np.radians(beta)
         return beta_rad
+
 
     @staticmethod
     def _calculate_cpa(target: 'Target', beta: float) -> float:
