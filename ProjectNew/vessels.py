@@ -93,7 +93,8 @@ class Target(BaseShip):
                 f'TCPA: {self.tcpa}\n'
                 f'BCR: {self.bcr}\n'
                 f'TBC: {self.tbc}\n'
-                f'IsDangerous: {self.is_dangerous}\n')
+                f'IsDangerous: {self.is_dangerous}\n'
+                f'Aspect: {self.aspect}\n')
 
 
 

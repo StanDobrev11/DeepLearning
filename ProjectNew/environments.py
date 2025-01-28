@@ -26,8 +26,11 @@ class MarineEnv(gym.Env):
     CPA_VIOLATION_PENALTY = -10  # Penalty for violating CPA threshold
     CPA_SAFE_REWARD = 5  # Reward for maintaining safe CPA
     STARBOARD_TURN_REWARD = 2.0  # Reward for correct starboard turn
-    PORT_TURN_PENALTY = -3.0  # Penalty for incorrect port turn
+    PORT_TURN_PENALTY = -5.0  # Penalty for incorrect port turn
     UNNECESSARY_MOVEMENT_PENALTY = -1.0  # Penalty for unnecessary maneuvers
+
+    # WP rewards and penalties
+    WP_REACH_REWARD = 100  # reward for reaching the waypoint
 
     def __init__(
             self,
@@ -56,7 +59,6 @@ class MarineEnv(gym.Env):
         self.step_counter = 0
         self.training_stage = training_stage
         self.total_targets = total_targets
-        self.scene = None  # the collision avoidance situation for each target
 
         # target props
         self.cpa_threshold = cpa_threshold  # minimum safe distance
@@ -275,7 +277,7 @@ class MarineEnv(gym.Env):
 
         # reaching the wp -> large reward and episode termination
         if self.wp_distance < self.waypoint_reach_threshold:
-            return 100.0, True, False, info
+            return self.WP_REACH_REWARD, True, False, info
 
         # reward for wp tracking, training stage 1
         if self.training_stage == 1:
@@ -284,7 +286,8 @@ class MarineEnv(gym.Env):
         # TODO reward for training stage 2, one target
         if self.training_stage == 2:
 
-            reward = wp_following_reward(reward)
+            if len(self.own_ship.dangerous_targets) == 0:
+                reward = wp_following_reward(reward)
 
             for i, target in enumerate(self.own_ship.dangerous_targets):
                 # Huge penalty for collision
@@ -294,13 +297,13 @@ class MarineEnv(gym.Env):
                     break
 
                 # Penalty/reward for CPA violation/safety
-                if target.cpa < abs(self.cpa_threshold):
+                if target.cpa < abs(self.cpa_threshold) and target.tcpa <= 12:
                     reward += self.CPA_VIOLATION_PENALTY  # Penalty for dangerous CPA
                 else:
                     reward += self.CPA_SAFE_REWARD  # Reward for maintaining safe CPA
 
                 # Handle head-on and crossing scenarios
-                if self.scene in ['head-on', 'crossing']:
+                if target.aspect in ['head-on', 'crossing']:
                     if target.relative_bearing > 0:  # Target is on starboard
                         if course_change < 0:  # Turning to port is a violation
                             reward += self.PORT_TURN_PENALTY  # Strong penalty for incorrect maneuver
@@ -457,6 +460,9 @@ class MarineEnv(gym.Env):
         course, speed = self.observation[:2]
         px, py = self._latlon_to_pixels(lat, lon)
         pygame.draw.circle(self.window, (255, 255, 255), (px, py), self.vessel_size)  # Own ship (white)
+
+        # Draw 1nm distance circle
+        pygame.draw.circle(self.window, (255, 0, 255), (px, py), self.scale, width=1)  # Own ship (white)
 
         # Draw own ship's heading line
         heading_rad = np.deg2rad(course - 90)  # Adjust course for pygame's coordinate system
@@ -628,8 +634,8 @@ class MarineEnv(gym.Env):
             course=target_course,
             speed=target_speed,
         )
+        target.aspect = scene
         self.own_ship.update_target(target)
-        self.scene = scene
 
         return target
 
