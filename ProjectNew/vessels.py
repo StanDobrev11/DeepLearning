@@ -76,19 +76,25 @@ class Target(BaseShip):
         self.tcpa: float = 0.0  # time to CPA
         self.bcr: float = 0.0  # own ship bow crossing range of the target. If positive - crossing bow of target,
         self.tbc: float = 0.0  # time to BCR
-        # else crossing the stern
         self.stand_on: bool = True  # defines if the target gives way or is a stand-on vessel
         self.is_dangerous: bool = False  # defines the status of the target
+        self.aspect: Optional[str] = None # the aspect of the target as viewed from own ship
 
     def __repr__(self):
         return (f'{self.__class__.__name__}:\n'
                 f'Position: {self.lat, self.lon}\n'
                 f'Course: {self.course}\n'
                 f'Speed: {self.speed}\n'
+                f'Relative Bearing: {self.relative_bearing}\n'
+                f'Distance: {self.distance}\n'
+                f'Relative Course: {self.relative_course}\n'
+                f'Relative Speed: {self.relative_speed}\n'
                 f'CPA: {self.cpa}\n'
                 f'TCPA: {self.tcpa}\n'
                 f'BCR: {self.bcr}\n'
-                f'TBC: {self.tbc}')
+                f'TBC: {self.tbc}\n'
+                f'IsDangerous: {self.is_dangerous}\n')
+
 
 
 class OwnShip(BaseShip):
@@ -212,9 +218,6 @@ class OwnShip(BaseShip):
         else:
             target.stand_on = False
 
-    def set_dangerous(self, target: 'Target') -> bool:
-        return True if 0 < target.cpa <= self.tcpa_threshold and 0 <= target.cpa <= self.cpa_threshold else False
-
     def update_target(self, target: 'Target') -> None:
         target.relative_course = self.calculate_relative_course(target)
         target.relative_speed = self.calculate_relative_speed(target)
@@ -222,7 +225,6 @@ class OwnShip(BaseShip):
         target.distance = self.calculate_distance((target.lat, target.lon))
         target.cpa, target.tcpa = self.calculate_cpa_tcpa(target)
         target.bcr, target.tbc = self.calculate_bcr_tbc(target)
-        target.is_dangerous = self.set_dangerous(target)
 
     def _relative_position_components(self, target: 'Target') -> Tuple[float, float]:
         own_lat_rad = np.radians(self.lat)

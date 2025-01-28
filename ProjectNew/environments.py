@@ -6,7 +6,7 @@ import pygame
 
 from gymnasium import spaces
 from gymnasium.core import ObsType
-from gymnasium.spaces.utils import flatten, flatten_space
+from gymnasium.spaces.utils import flatten_space
 
 import numpy as np
 
@@ -21,12 +21,20 @@ class MarineEnv(gym.Env):
     WP_PARAMS: List[str] = []
     TARGET_PARAMS: List[str] = []
 
+    # Constants for rewards and penalties
+    COLLISION_PENALTY = -300  # Large penalty for collision
+    CPA_VIOLATION_PENALTY = -10  # Penalty for violating CPA threshold
+    CPA_SAFE_REWARD = 5  # Reward for maintaining safe CPA
+    STARBOARD_TURN_REWARD = 2.0  # Reward for correct starboard turn
+    PORT_TURN_PENALTY = -3.0  # Penalty for incorrect port turn
+    UNNECESSARY_MOVEMENT_PENALTY = -1.0  # Penalty for unnecessary maneuvers
+
     def __init__(
             self,
             # environment properties
             initial_lat: float = 0.0,
             initial_lon: float = 0.0,
-            env_range: int = 15,  # defines the size of the field
+            env_range: int = 20,  # defines the size of the field
             timescale: int = 1,  # defines the step size, defaults to 1 min step
             continuous: bool = False,
 
@@ -38,7 +46,7 @@ class MarineEnv(gym.Env):
             cpa_threshold: float = 1.0,  # in nautical miles
             tcpa_threshold: float = 12,  # in minutes
             # the limits at witch the own ship is no longer considered "stand-on" and must act to avoid collision
-            cpa_limit: float = 0.1,
+            cpa_limit: float = 0.2,
             tcpa_limit: float = 3,
             training_stage: int = 1,  # defines different training stages, 0 for no training
             total_targets: Optional[int] = None
@@ -48,6 +56,7 @@ class MarineEnv(gym.Env):
         self.step_counter = 0
         self.training_stage = training_stage
         self.total_targets = total_targets
+        self.scene = None  # the collision avoidance situation for each target
 
         # target props
         self.cpa_threshold = cpa_threshold  # minimum safe distance
@@ -96,7 +105,7 @@ class MarineEnv(gym.Env):
             f"Invalid render_mode: {render_mode}. Available modes: {self.metadata['render_modes']}"
         self.render_mode = render_mode
 
-        self.window_size = 800  # Pixels for visualization
+        self.window_size = 600  # Pixels for visualization
         self.scale = self.window_size / ((self.lat_bounds[1] - self.lat_bounds[0]) * 60)  # Pixels per NM
         self.window = None
         self.clock = None
@@ -117,7 +126,7 @@ class MarineEnv(gym.Env):
                     'bcr': spaces.Box(low=-50, high=50, shape=(), dtype=np.float32),
                     'cpa': spaces.Box(low=0, high=50, shape=(), dtype=np.float32),
                     'target_course': spaces.Box(low=0, high=360, shape=(), dtype=np.float32),
-                    'target_distance': spaces.Box(low=0, high=self.env_range, shape=(), dtype=np.float32),
+                    'target_distance': spaces.Box(low=0, high=50, shape=(), dtype=np.float32),
                     'target_relative_bearing': spaces.Box(low=-180, high=180, shape=(), dtype=np.float32),
                     'target_relative_course': spaces.Box(low=0, high=360, shape=(), dtype=np.float32),
                     'target_relative_speed': spaces.Box(low=0, high=50, shape=(), dtype=np.float32),
@@ -187,34 +196,21 @@ class MarineEnv(gym.Env):
         own_ship_data = self._generate_own_ship_data()
         own_ship_data['wp_target_eta'] = last_tgt_eta - self.timescale
 
-        if self.own_ship.detected_targets:
-            # Move/update all detected targets
-            for target in self.own_ship.detected_targets:
-                target.update_position(time_interval=self.timescale, clip_lat=self.lat_bounds, clip_lon=self.lon_bounds)
-                self.own_ship.update_target(target)
+        # Move/update all detected targets
+        for target in self.own_ship.detected_targets:
+            target.update_position(time_interval=self.timescale, clip_lat=self.lat_bounds, clip_lon=self.lon_bounds)
+            self.own_ship.update_target(target)
 
-            # Sort detected targets by dangerous coefficient (CPA ** 2 * TCPA) and take the top 3
-            self.own_ship.dangerous_targets = sorted(
-                self.own_ship.detected_targets, key=lambda x: x.cpa ** 2 * x.tcpa
-            )[:3]
+            # check target coordinates and remove from list if out of bounds
+            if target.lat < self.lat_bounds[0] or target.lat > self.lon_bounds[1] or \
+                    target.lon < self.lon_bounds[0] or target.lon > self.lon_bounds[1]:
+                self.own_ship.detected_targets.remove(target)
 
-            # initialize empty targets list with zero-filled entries
-            targets_data = self._generate_zero_target_data(3)
-
-            # fill in detected targets (up to 3)
-            for i, target in enumerate(self.own_ship.dangerous_targets):
-                if target.distance <= 3:  # define dangerous distance targets when agent must act
-                    target.is_dangerous = True
-                targets_data[i] = self._generate_actual_target_data(target)
-
-        else:
-            # no detected targets, return all-zero target data
-            targets_data = self._generate_zero_target_data(3)
-
+        dangerous_targets_data = self._generate_dangerous_targets_state()
         # construct the final observation
         raw_observation = {
             "own_ship": own_ship_data,
-            "targets": targets_data
+            "targets": dangerous_targets_data
         }
 
         previous_obs = self.observation
@@ -275,7 +271,7 @@ class MarineEnv(gym.Env):
 
         previous_course = previous_data['own_ship']['course']
         current_course = current_data['own_ship']['course']
-        course_change = current_course - previous_course
+        course_change = self._normalize_course(current_course - previous_course)
 
         # reaching the wp -> large reward and episode termination
         if self.wp_distance < self.waypoint_reach_threshold:
@@ -287,39 +283,33 @@ class MarineEnv(gym.Env):
 
         # TODO reward for training stage 2, one target
         if self.training_stage == 2:
+
             reward = wp_following_reward(reward)
 
-            # iterate over each target and modify the reward
             for i, target in enumerate(self.own_ship.dangerous_targets):
-                # huge penalty for collision
+                # Huge penalty for collision
                 if target.distance < self.cpa_limit:
-                    reward -= 100
+                    reward += self.COLLISION_PENALTY
                     terminated = True
+                    break
 
-                # penalty for CPA
+                # Penalty/reward for CPA violation/safety
                 if target.cpa < abs(self.cpa_threshold):
-                    reward -= 1 % i if i > 0 else 1  # for less dangerous targets, less penalty
+                    reward += self.CPA_VIOLATION_PENALTY  # Penalty for dangerous CPA
                 else:
-                    reward += 1 % i if i > 0 else 1
+                    reward += self.CPA_SAFE_REWARD  # Reward for maintaining safe CPA
 
-                # penalize alteration to port for head-on and crossing
-                if current_data['targets']['target_relative_bearing'] > 0:
-                    if course_change < 0:
-                        reward -= 0.5
-                    else:
-                        reward += 0.5
+                # Handle head-on and crossing scenarios
+                if self.scene in ['head-on', 'crossing']:
+                    if target.relative_bearing > 0:  # Target is on starboard
+                        if course_change < 0:  # Turning to port is a violation
+                            reward += self.PORT_TURN_PENALTY  # Strong penalty for incorrect maneuver
+                        else:
+                            reward += self.STARBOARD_TURN_REWARD  # Reward for correct starboard turn
 
-                # remove target if no longer dangerous
-                if target.tcpa < 0:
-                    target.is_dangerous = False
-                    self.own_ship.dangerous_targets.remove(target)
-
-                # reintroducing waypoint tracking with lower weight
-                previous_wp_distance = previous_data['own_ship']['wp_distance']
-                current_wp_distance = current_data['own_ship']['wp_distance']
-                distance_change = previous_wp_distance - current_wp_distance
-
-                reward += max(-0.5, distance_change * 5)  # ✅ Lower weight for WP tracking
+                    elif target.relative_bearing < 0:  # Target is on port
+                        if course_change > 0:  # Unnecessary starboard turn
+                            reward += self.UNNECESSARY_MOVEMENT_PENALTY  # Small penalty for unnecessary movement
 
         # TODO reward for training stage 3, two targets
         # TODO reward for training stage 4, three targets
@@ -365,7 +355,9 @@ class MarineEnv(gym.Env):
         self.step_counter = 0
 
         own_ship_data = {}
-        targets_data = {}
+        dangerous_targets_data = {}
+
+        training_stage = random.randint(1, 2)
 
         # random initial speed, minimum 7 kn
         self.own_ship.speed = np.random.uniform(low=7, high=self.own_ship.max_speed)
@@ -375,7 +367,7 @@ class MarineEnv(gym.Env):
             pass
 
         # state for wp tracking training
-        elif self.training_stage == 1:  # training for wp tracking, no targets
+        elif training_stage == 1:  # training for wp tracking, no targets
 
             # placing the vessel in the center of the env
             self.own_ship.lat, self.own_ship.lon = np.mean(self.lat_bounds), np.mean(self.lon_bounds)
@@ -384,7 +376,7 @@ class MarineEnv(gym.Env):
             self.own_ship.course = np.random.uniform(low=0, high=360)
 
             # place the waypoint
-            self.waypoint.lat, self.waypoint.lon = place_waypoint(3, 20)
+            self.waypoint.lat, self.waypoint.lon = place_waypoint(3, self.env_range - 1)
 
             # calculate target eta, calculated using initial speed
             target_eta = self.wp_eta
@@ -393,10 +385,10 @@ class MarineEnv(gym.Env):
             own_ship_data['wp_eta'] = target_eta
             own_ship_data['wp_target_eta'] = target_eta
 
-            targets_data = self._generate_zero_target_data(3)
+            dangerous_targets_data = self._generate_zero_target_data(3)
 
         # set the state for training with 1 target
-        elif self.training_stage == 2:
+        elif training_stage == 2:
 
             # set own position at random corner
             delta_lat = (self.lon_bounds[1] - self.lon_bounds[0]) / 6
@@ -414,7 +406,7 @@ class MarineEnv(gym.Env):
             self.own_ship.lat, self.own_ship.lon = random.choice(corners)
 
             # place the waypoint
-            self.waypoint.lat, self.waypoint.lon = place_waypoint(7, 12)
+            self.waypoint.lat, self.waypoint.lon = place_waypoint(7, 17)
 
             target_eta = self.wp_eta
             own_ship_data = self._generate_own_ship_data()
@@ -427,18 +419,19 @@ class MarineEnv(gym.Env):
             own_ship_data['wp_target_eta'] = target_eta
 
             target = self._place_dangerous_target_ship()
-            target_data = self._generate_actual_target_data(target)
-
-            targets_data = [target_data] + self._generate_zero_target_data(self.training_stage)
 
             # add target to detected targets
             self.own_ship.detected_targets.append(target)
 
+            # generate the targets data
+            dangerous_targets_data = self._generate_dangerous_targets_state()
+
         raw_observation = {
             "own_ship": own_ship_data,
-            "targets": targets_data
+            "targets": dangerous_targets_data
         }
 
+        self.training_stage = training_stage  # pass the stage to the step method
         self.observation = self._flatten_observation(raw_observation)
 
         return self.observation, {}
@@ -505,13 +498,48 @@ class MarineEnv(gym.Env):
             pygame.quit()
             self.window = None
 
+    @staticmethod
+    def _normalize_course(course: float) -> float:
+        """
+        the method normalizes the course in range 0 - 360 degrees
+        """
+        # Normalize the course change to the range [-180°, 180°]
+        if course > 180:
+            course -= 360
+        elif course < -180:
+            course += 360
+
+        return course
+
+    def _generate_dangerous_targets_state(self):
+
+        # initialize empty targets list with zero-filled entries
+        targets_data = self._generate_zero_target_data(3)
+
+        if self.own_ship.detected_targets:
+            # Sort detected targets by dangerous coefficient (CPA ** 2 * TCPA) and take the top 3
+            self.own_ship.dangerous_targets = sorted(
+                self.own_ship.detected_targets, key=lambda x: x.cpa ** 2 * x.tcpa
+            )[:3]
+
+            # fill in detected targets (up to 3) and set the targets to be dangerous
+            for i, target in enumerate(self.own_ship.dangerous_targets):
+                if target.tcpa == 0:
+                    self.own_ship.dangerous_targets.remove(target)
+                    target.is_dangerous = False
+                    break
+
+                if target.cpa <= self.cpa_threshold and target.tcpa <= self.tcpa_threshold:  # define dangerous distance targets when agent must act
+                    target.is_dangerous = True
+                    targets_data[i] = self._generate_actual_target_data(target)
+
+        return targets_data
+
     def _place_dangerous_target_ship(self, scene: Optional[str] = None) -> 'Target':
         """
         Place a TargetShip on a potentially dangerous track with specified CPA and TCPA.
 
-        :param scene: Defines the situation, i.e static, head-on, overtaking, crossing. The scene will define the status of the target ship as stand-on or give-way in further training
-        :param cpa_target: Desired closest point of approach (in NM).
-        :param tcpa_target: Desired time to closest point of approach (in minutes).
+        :param scene: Defines the situation, i.e. static, head-on, overtaking, crossing. The scene will define the status of the target ship as stand-on or give-way in further training
         :return: TargetShip object added to the environment.
         """
 
@@ -601,6 +629,7 @@ class MarineEnv(gym.Env):
             speed=target_speed,
         )
         self.own_ship.update_target(target)
+        self.scene = scene
 
         return target
 
@@ -706,14 +735,18 @@ if __name__ == '__main__':
     # print(env.step((0.0, 0)))
     # print(env.step((0.0, 0)))
     print(env.reset())
+    print(env.training_stage)
+    print(env.own_ship.detected_targets)
+    # env.cpa_limit = 2
     total_reward = 0
     for _ in range(1000):
         state, reward, terminated, truncated, info = env.step((0, 0))
         total_reward += reward
 
         print(state)
-        print(reward)
-        print(total_reward)
+        print(env.own_ship.dangerous_targets)
+        # print(reward)
+        # print(total_reward)
 
         if terminated or truncated:
             print(info)
