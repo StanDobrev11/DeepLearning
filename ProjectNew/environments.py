@@ -714,7 +714,35 @@ class MarineEnv(gym.Env):
 
 
 if __name__ == '__main__':
-    env = MarineEnv(continuous=True, training_stage=2)
+    # from stable_baselines3 import PPO, A2C
+    # from stable_baselines3.common.env_util import make_vec_env
+    # from stable_baselines3.common.evaluation import evaluate_policy
+    # from stable_baselines3.common.callbacks import EvalCallback
+    # from stable_baselines3.common.monitor import Monitor
+    # from stable_baselines3.common.vec_env import VecNormalize, DummyVecEnv
+    # from stable_baselines3.common.vec_env import SubprocVecEnv
+
+    env_kwargs = dict(
+        render_mode='rgb_array',
+        continuous=True,
+        max_episode_steps=400,
+        training_stage=2,
+        timescale=1
+    )
+
+
+    # def make_env():
+    #     env = gym.make('MarineEnv-v0', **env_kwargs)
+    #     env = Monitor(env)  # ✅ Apply Monitor FIRST before vectorization
+    #     return env
+    #
+    #
+    # # # Wrap it in `DummyVecEnv` FIRST
+    # env = DummyVecEnv([make_env])
+
+    # Now apply normalization
+    # env = VecNormalize(env, norm_obs=True, norm_reward=True, clip_obs=10.0)
+    env = MarineEnv(render_mode='rgb_array', timescale=1, )
     # print(env.observation_space)
     # print(flatten_space(env.observation_space))
     # print(env.observation)
