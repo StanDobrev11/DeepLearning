@@ -29,8 +29,8 @@ class BaseShip:
     def update_position(
             self,
             time_interval: int,
-            clip_lat: Tuple[float, float],
-            clip_lon: Tuple[float, float]
+            clip_lat: Optional[tuple[float, float]] = None,
+            clip_lon: Optional[tuple[float, float]] = None,
     ) -> Tuple[float, float]:
         lat, lon = plane_sailing_next_position(
             [self.lat, self.lon],
@@ -38,9 +38,9 @@ class BaseShip:
             self.speed,
             time_interval,
         )
-
-        lat = np.clip(lat, clip_lat[0], clip_lat[1])
-        lon = np.clip(lon, clip_lon[0], clip_lon[1])
+        if clip_lat is not None or clip_lon is not None:
+            lat = np.clip(lat, clip_lat[0], clip_lat[1])
+            lon = np.clip(lon, clip_lon[0], clip_lon[1])
 
         self.lat = lat
         self.lon = lon
@@ -187,6 +187,10 @@ class OwnShip(BaseShip):
             delta_t = (cpa / np.tan(theta_rad)) / relative_speed
 
         tbc = tcpa + delta_t  # Initial calculation
+
+        # crossing astern, negative bcr
+        if tbc > tcpa:
+            bcr *= -1
 
         return bcr, max(tbc * 60, 0)  # Convert back to minutes, ensure non-negative
 
