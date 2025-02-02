@@ -261,37 +261,58 @@ class MarineEnv(gym.Env):
             current_wp_distance = current_data['own_ship']['wp_distance']
 
             distance_change = previous_wp_distance - current_wp_distance
-            rwrd += max(-1.0 * self.timescale,
-                        distance_change * 10 * self.timescale)  # Reward proportional to distance improvement
+            rwrd += max(-1.0,
+                        distance_change * 10)  # Reward proportional to distance improvement
 
             # bearing alignment reward
             current_wp_relative_bearing = current_data['own_ship']['wp_relative_bearing']
             alignment_error = abs(current_wp_relative_bearing)
 
-            # Bearing Alignment Reward
-            if alignment_error <= 1:
-                rwrd += 7.0  # Perfect alignment
-            elif alignment_error <= 5:
-                rwrd += 2.0  # Strong reward for near-perfect alignment
-            elif alignment_error <= 15:
-                rwrd += 1.0  # Moderate reward for good alignment
-            elif alignment_error <= 30:
-                rwrd += 0.5  # Small reward for decent alignment
-            else:
-                rwrd -= 0.5  # Penalty for poor alignment
+            # alignment reward
+            rwrd += bearing_alignment_reward(alignment_error)
 
             # Dynamic Course Change Penalty (Based on Alignment)
             # Allow larger course changes if alignment is poor
-            alignment_factor = max(1, alignment_error / 5)  # Scale penalty based on alignment (1 to 6)
-
-            if abs(course_change) < 1 * self.timescale:
-                rwrd += 1.0  # Reward steady course
-            elif abs(course_change) < 5 * self.timescale:
-                rwrd -= 0.1 * alignment_factor  # Mild penalty if poorly aligned, stronger penalty if well-aligned
-            elif abs(course_change) >= 10 * self.timescale:
-                rwrd -= 0.5 * alignment_factor  # Strong penalty when well-aligned, minimal if misaligned
+            # alignment_factor = max(1, alignment_error / 5)  # Scale penalty based on alignment (1 to 6)
+            #
+            # if abs(course_change) < 1 * self.timescale:
+            #     rwrd += 1.0  # Reward steady course
+            # elif abs(course_change) < 5 * self.timescale:
+            #     rwrd -= 0.1 * alignment_factor  # Mild penalty if poorly aligned, stronger penalty if well-aligned
+            # elif abs(course_change) <= 10 * self.timescale:
+            #     rwrd -= 0.5 * alignment_factor  # Strong penalty when well-aligned, minimal if misaligned
+            # else:
+            #     rwrd -= alignment_factor
 
             return rwrd
+
+        # Bearing Alignment Reward
+        def bearing_alignment_reward(alignment_error: float) -> float:
+            max_reward = 10
+            min_positive_reward = 1
+            penalty_scale = -0.1
+
+            if alignment_error <= 30:
+                reward = max_reward - ((max_reward - min_positive_reward) / 30.0 ) * alignment_error
+            else:
+                reward = penalty_scale * (alignment_error - 30)
+
+            return reward
+
+        def calculate_eta_reward(eta_diff: float) -> float:
+            # Parameters
+            max_reward = 10 * self.timescale  # Max reward when ETA difference = 0
+            min_positive_reward = 1 * self.timescale  # Reward when ETA difference = 6
+            penalty_scale = -2 * self.timescale  # Penalty multiplier when ETA difference > 6
+
+            if eta_diff <= 6:
+                # Linear Decay Reward: max_reward decreases linearly to min_positive_reward
+                reward = max_reward - ((max_reward - min_positive_reward) / 6) * eta_diff
+            else:
+                # Negative Penalty: linear penalty increasing with the ETA difference
+                reward = penalty_scale * (eta_diff - 6)  # Penalty starts after 6 min deviation
+
+            return reward
 
         previous_data = self._generate_observation_dict(previous_obs)
         current_data = self._generate_observation_dict(current_obs)
@@ -336,73 +357,80 @@ class MarineEnv(gym.Env):
             else:
                 for i, target in enumerate(self.own_ship.dangerous_targets):
 
-                    # Huge penalty for collision
+                    # ✅ Huge Penalty for Collision (Immediate Termination)
                     if target.distance < self.CPA_LIMIT:
                         reward += self.COLLISION_PENALTY
                         info['terminated'] = 'Collision!'
                         terminated = True
                         break
 
-                    # penalty for close quarter situation
-                    # for distance 0.9 -> -12.34, for 0.4 -> 62.5
+                    # ✅ CPA Penalty (Capped to Prevent Over-Penalization)
                     if target.distance < self.CPA_THRESHOLD:
-                        reward -= 10 / target.distance ** 2
+                        reward -= min(20, (2 / (target.distance + 0.1) ** 2)) * self.timescale
 
-                    # CPA < 1.0 NM ant TCPA < 15 min, targets are considered dangerous and must act
-                    # TCPA < 12 min, the situation should be cleared, i.e. CPA >= 1.0 NM
-                    # if not -> penalty. For every minute the CPA is below the threshold should have penalty
-                    # for 11 min -> 9.09, for 4 min -> 25
-                    if target.tcpa < self.TCPA_THRESHOLD - 3 and target.cpa < self.CPA_THRESHOLD:
-                        reward -= 100 / target.tcpa
-                    elif target.tcpa < self.TCPA_THRESHOLD - 3 and target.cpa >= self.CPA_THRESHOLD:
-                        reward += 10
+                    # ✅ TCPA Penalty/Reward (Conditioned on COLREG Compliance)
+                    if target.tcpa < self.TCPA_THRESHOLD - 3:
+                        if target.cpa >= self.CPA_THRESHOLD:
 
-                    # Handle head-on and crossing scenarios
-                    if target.aspect in ['head-on', 'crossing']:
-                        # huge penalty for turning to port
-                        if course_change < 0:
-                            reward += self.COLREG_VIOLATION
+                            if course_change >= 0:  # ✅ Reward only if turning starboard or going straight
+                                reward += target.tcpa * 2 * self.timescale
+                            else:  # 🚩 Penalize if cleared via port turn
+                                reward -= abs(course_change) * 5
+
                         else:
-                            reward += self.TURN_REWARD
+                            reward -= (1 / (target.cpa + 0.1) ** 2) * self.timescale
 
-                        # target to port bow/side
-                        if target.relative_bearing < 0:
+                    # ✅ Handle Head-On and Crossing Situations
+                    if target.aspect in ['head-on', 'crossing']:
 
-                            if target.tbc < target.tcpa:  # crossing stern
-                                reward += self.CPA_SAFE_REWARD
+                        # 🚩 Strong Penalty for Turning to Port in Head-On/Crossing
+                        if course_change < 0:
+                            reward -= abs(course_change) * 5  # Increased penalty
+
+                        # ✅ Target to Port Bow (Encourage Starboard Turn, Penalize Port Turn)
+                        if -90 <= target.relative_bearing <= 0 and target.cpa < self.CPA_THRESHOLD:
+                            if course_change > 0:  # ✅ Correct (starboard turn)
+                                reward += 2 * self.timescale
+                            elif course_change < 0:  # 🚩 Incorrect (port turn)
+                                reward -= abs(course_change) * 5  # Strong penalty for COLREG violation
+
+                            if speed_change > 0:
+                                reward += 1 * self.timescale
+
+                        # ✅ Target to Starboard
+                        if 0 < target.relative_bearing <= 60 and target.cpa < self.CPA_THRESHOLD:
+                            if target.bcr < 0:
+                                reward += 1 * self.timescale
                             else:
-                                reward += self.CPA_VIOLATION_PENALTY
-                            # penalty for speed increasing speed and passing ahead if CPA less than 0.8
-                            if target.bcr > 0 and target.cpa > 0.8:  # crossing ahead of target
-                                if speed_change < 0:  # if slowing down - penalty
-                                    reward -= 10 * abs(target.cpa)
-                                else:
-                                    reward += 10 * abs(target.cpa)
+                                reward -= 1 * self.timescale
 
+                            if course_change > 0:  # ✅ Correct (starboard turn)
+                                reward += course_change
+                            elif course_change < 0:  # 🚩 Incorrect (port turn)
+                                reward -= abs(course_change) * 5
 
-                        # target to starboard
-                        elif 0 <= target.relative_bearing <= 89.5:  # to starboard
-                            # crossing ahead of the target violation
-                            if target.tbc < target.tcpa:
-                                reward += self.CPA_VIOLATION_PENALTY
+                            if speed_change < 0:
+                                reward += 1 * self.timescale
+
+                        # ✅ Target Abaft the Beam
+                        elif 60 < target.relative_bearing <= 117.5 and target.cpa < self.CPA_THRESHOLD:
+                            if target.bcr < 0:
+                                reward += 1 * self.timescale
                             else:
-                                reward += self.CPA_SAFE_REWARD
-                            # dont alter course, slow down
-                        elif 89.5 < target.relative_bearing <= 117.5:
-                            if course_change > 0:  # alter to vessel abeam or abaft the beam is violation
-                                reward += self.COLREG_VIOLATION
+                                reward -= 1 * self.timescale
 
-                            if speed_change > 0:  # increase of speed is violation
-                                reward += self.SPEED_PENALTY
-                            else:
-                                reward += self.SPEED_REWARD  # slow down let the vessel pass ahead
+                            if course_change < 0:  # 🚩 Penalize for turning to port unnecessarily
+                                reward -= abs(course_change) * 2
+
+                            if speed_change < 0:
+                                reward += 2 * self.timescale
 
         # reward for keeping ETA steady
         current_eta = current_data['own_ship']['wp_eta']
         target_eta = current_data['own_ship']['wp_target_eta']
+        eta_difference = abs(current_eta - target_eta)
 
-        if abs(current_eta - target_eta) > 6:
-            reward += self.ETA_PENALTY
+        reward += calculate_eta_reward(eta_difference)
 
         if target_eta < -12:
             reward += self.ETA_VIOLATION_PENALTY
@@ -441,6 +469,7 @@ class MarineEnv(gym.Env):
 
         own_ship_data = {}
         dangerous_targets_data = {}
+        self.own_ship.reset()
 
         # TODO remove training stage
         if self.training:
@@ -805,32 +834,34 @@ if __name__ == '__main__':
         render_mode='human',
         continuous=True,
         training_stage=2,
-        timescale=1,
+        timescale=1/6,
         training=False,
         seed=42,
     )
     env = MarineEnv(**env_kwargs)
     agent = PPO('MlpPolicy', env=env).load("ppo.zip", device='cpu')
+    for i in range(3):
+        if i == 2:
+            a = 5
+        state, _ = env.reset()
+        print(env.training_stage)
+        print(env.own_ship.detected_targets)
+        # env.cpa_limit = 2
+        total_reward = 0
+        for _ in range(int(400 / env.timescale)):
+            action = agent.predict(state, deterministic=True)
+            # action = [[1, 1], 0]
+            next_state, reward, terminated, truncated, info = env.step(action[0])
+            total_reward += reward
 
-    state, _ = env.reset()
-    print(env.training_stage)
-    print(env.own_ship.detected_targets)
-    # env.cpa_limit = 2
-    total_reward = 0
-    for _ in range(int(400 / env.timescale)):
-        action = agent.predict(state, deterministic=True)
-        # action = [[1, 1], 0]
-        next_state, reward, terminated, truncated, info = env.step(action[0])
-        total_reward += reward
+            print(next_state)
+            print(env.own_ship.dangerous_targets)
+            print(reward)
+            print(total_reward)
 
-        print(next_state)
-        print(env.own_ship.dangerous_targets)
-        print(reward)
-        print(total_reward)
+            if terminated or truncated:
+                print(info)
+                break
 
-        if terminated or truncated:
-            print(info)
-            break
-
-        state = next_state
-    print('Total reward: {}'.format(total_reward))
+            state = next_state
+        print('Total reward: {}'.format(total_reward))

@@ -83,16 +83,16 @@ class Target(BaseShip):
     def __repr__(self):
         return (f'{self.__class__.__name__}:\n'
                 f'Position: {self.lat, self.lon}\n'
-                f'Course: {self.course}\n'
-                f'Speed: {self.speed}\n'
-                f'Relative Bearing: {self.relative_bearing}\n'
-                f'Distance: {self.distance}\n'
-                f'Relative Course: {self.relative_course}\n'
-                f'Relative Speed: {self.relative_speed}\n'
-                f'CPA: {self.cpa}\n'
-                f'TCPA: {self.tcpa}\n'
-                f'BCR: {self.bcr}\n'
-                f'TBC: {self.tbc}\n'
+                f'Course: {self.course:.2f}\n'
+                f'Speed: {self.speed:.2f}\n'
+                f'Relative Bearing: {self.relative_bearing:.2f}\n'
+                f'Distance: {self.distance:.2f}\n'
+                f'Relative Course: {self.relative_course:.2f}\n'
+                f'Relative Speed: {self.relative_speed:.2f}\n'
+                f'CPA: {self.cpa:.2f}\n'
+                f'TCPA: {self.tcpa:.2f}\n'
+                f'BCR: {self.bcr:.2f}\n'
+                f'TBC: {self.tbc:.2f}\n'
                 f'IsDangerous: {self.is_dangerous}\n'
                 f'Aspect: {self.aspect}\n')
 
@@ -104,6 +104,10 @@ class OwnShip(BaseShip):
         super().__init__(*args, **kwargs)
         self.detected_targets: List['Target'] = []  # contains a list of all targets in range
         self.dangerous_targets: List['Target'] = []  # contains the top 3 dangerous targets, ordered by CPA and TCPA
+
+    def reset(self) -> None:
+        self.detected_targets.clear()
+        self.dangerous_targets.clear()
 
     def calculate_distance(self, target: Union['Target', 'StaticObject', 'Tuple']) -> float:
         return rumbline_distance(
