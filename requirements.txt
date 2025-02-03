@@ -21,3 +21,6 @@ torchvision
 torchaudio
 stable-baselines3[extra]
 rl_zoo3
+plotly
+grpcio
+grpcio-tools

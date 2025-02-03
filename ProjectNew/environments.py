@@ -47,6 +47,8 @@ class MarineEnv(gym.Env):
     ]
 
     # Constants for rewards and penalties
+    CPA_AVOIDANCE_THRESHOLD = 1.2  # CPA threshold for excessive avoidance
+    AVOIDANCE_PENALTY_FACTOR = 5.0  # Scaling factor for excessive avoidance penalty
     COLLISION_PENALTY: int = -300  # Large penalty for collision
     CPA_VIOLATION_PENALTY: int = -75  # Penalty for violating CPA threshold
     CPA_SAFE_REWARD: int = 15  # Reward for maintaining safe CPA
@@ -80,7 +82,7 @@ class MarineEnv(gym.Env):
         self.step_counter = 0
         self.training_stage = training_stage
         self.total_targets = total_targets
-        self.seed = seed if seed else self.set_global_seed(seed)
+        self.seed = self.set_global_seed(seed)
 
         # initialize the environment bounds
         self.lat_bounds: Tuple[float, float] = (self.INITIAL_LAT, self.INITIAL_LAT + self.ENV_RANGE / 60)
@@ -106,6 +108,8 @@ class MarineEnv(gym.Env):
 
         # initialize own ship
         self.own_ship = OwnShip()
+        self.own_ship_trace: list = []
+        self.target_traces: dict = {}
 
         # initialize the wp
         self.waypoint = StaticObject()  # 2 elements, latitude and longitude
@@ -143,7 +147,7 @@ class MarineEnv(gym.Env):
             'own_ship': spaces.Dict({
                 'course': spaces.Box(low=0, high=360, shape=(), dtype=np.float32),
                 'speed': spaces.Box(low=-10, high=20, shape=(), dtype=np.float32),
-                'wp_distance': spaces.Box(low=0, high=self.ENV_RANGE, shape=(), dtype=np.float32),
+                'wp_distance': spaces.Box(low=0, high=50, shape=(), dtype=np.float32),
                 'wp_eta': spaces.Box(low=0, high=300, shape=(), dtype=np.float32),
                 'wp_relative_bearing': spaces.Box(low=-180, high=180, shape=(), dtype=np.float32),
                 'wp_target_eta': spaces.Box(low=0, high=300, shape=(), dtype=np.float32),
@@ -158,8 +162,8 @@ class MarineEnv(gym.Env):
                     'target_relative_course': spaces.Box(low=0, high=360, shape=(), dtype=np.float32),
                     'target_relative_speed': spaces.Box(low=0, high=50, shape=(), dtype=np.float32),
                     'target_speed': spaces.Box(low=-10, high=20, shape=(), dtype=np.float32),
-                    'tbc': spaces.Box(low=-10, high=100, shape=(), dtype=np.float32),
-                    'tcpa': spaces.Box(low=-60, high=100, shape=(), dtype=np.float32),
+                    'tbc': spaces.Box(low=-100, high=100, shape=(), dtype=np.float32),
+                    'tcpa': spaces.Box(low=0, high=100, shape=(), dtype=np.float32),
                 }) for _ in range(self.total_targets)  # assuming targets are considered dangerous
             ])
         })
@@ -271,19 +275,6 @@ class MarineEnv(gym.Env):
             # alignment reward
             rwrd += bearing_alignment_reward(alignment_error)
 
-            # Dynamic Course Change Penalty (Based on Alignment)
-            # Allow larger course changes if alignment is poor
-            # alignment_factor = max(1, alignment_error / 5)  # Scale penalty based on alignment (1 to 6)
-            #
-            # if abs(course_change) < 1 * self.timescale:
-            #     rwrd += 1.0  # Reward steady course
-            # elif abs(course_change) < 5 * self.timescale:
-            #     rwrd -= 0.1 * alignment_factor  # Mild penalty if poorly aligned, stronger penalty if well-aligned
-            # elif abs(course_change) <= 10 * self.timescale:
-            #     rwrd -= 0.5 * alignment_factor  # Strong penalty when well-aligned, minimal if misaligned
-            # else:
-            #     rwrd -= alignment_factor
-
             return rwrd
 
         # Bearing Alignment Reward
@@ -293,7 +284,7 @@ class MarineEnv(gym.Env):
             penalty_scale = -0.1
 
             if alignment_error <= 30:
-                reward = max_reward - ((max_reward - min_positive_reward) / 30.0 ) * alignment_error
+                reward = max_reward - ((max_reward - min_positive_reward) / 30.0) * alignment_error
             else:
                 reward = penalty_scale * (alignment_error - 30)
 
@@ -355,8 +346,9 @@ class MarineEnv(gym.Env):
                 reward = wp_following_reward(reward)
 
             else:
-                for i, target in enumerate(self.own_ship.dangerous_targets):
-
+                for _, target in enumerate(self.own_ship.dangerous_targets):
+                    if not target.is_dangerous:
+                        continue
                     # ✅ Huge Penalty for Collision (Immediate Termination)
                     if target.distance < self.CPA_LIMIT:
                         reward += self.COLLISION_PENALTY
@@ -368,62 +360,77 @@ class MarineEnv(gym.Env):
                     if target.distance < self.CPA_THRESHOLD:
                         reward -= min(20, (2 / (target.distance + 0.1) ** 2)) * self.timescale
 
+                    # ✅ Penalize Excessive Avoidance (CPA > 1.2 NM)
+                    if target.cpa > self.CPA_AVOIDANCE_THRESHOLD:
+                        excess_cpa = target.cpa - self.CPA_AVOIDANCE_THRESHOLD
+                        penalty = excess_cpa * self.AVOIDANCE_PENALTY_FACTOR
+                        reward -= penalty * self.timescale
+
                     # ✅ TCPA Penalty/Reward (Conditioned on COLREG Compliance)
                     if target.tcpa < self.TCPA_THRESHOLD - 3:
                         if target.cpa >= self.CPA_THRESHOLD:
-
                             if course_change >= 0:  # ✅ Reward only if turning starboard or going straight
                                 reward += target.tcpa * 2 * self.timescale
                             else:  # 🚩 Penalize if cleared via port turn
                                 reward -= abs(course_change) * 5
-
                         else:
                             reward -= (1 / (target.cpa + 0.1) ** 2) * self.timescale
 
                     # ✅ Handle Head-On and Crossing Situations
                     if target.aspect in ['head-on', 'crossing']:
-
-                        # 🚩 Strong Penalty for Turning to Port in Head-On/Crossing
+                        # 🚩 Strong Penalty for Turning to Port in Head-On/Crossing (unless specific conditions are met)
                         if course_change < 0:
                             reward -= abs(course_change) * 5  # Increased penalty
 
-                        # ✅ Target to Port Bow (Encourage Starboard Turn, Penalize Port Turn)
-                        if -90 <= target.relative_bearing <= 0 and target.cpa < self.CPA_THRESHOLD:
-                            if course_change > 0:  # ✅ Correct (starboard turn)
-                                reward += 2 * self.timescale
-                            elif course_change < 0:  # 🚩 Incorrect (port turn)
-                                reward -= abs(course_change) * 5  # Strong penalty for COLREG violation
+                        # ✅ Target to Port Bow
+                        if -10 <= target.relative_bearing <= 0 and target.cpa < self.CPA_THRESHOLD:
+                            if target.bcr < 0 and target.cpa > 0.5:  # ✅ Alter to port if crossing stern
+                                if course_change < 0:  # ✅ Correct (port turn)
+                                    reward += 2 * self.timescale
+                                else:  # 🚩 Incorrect (starboard turn or no turn)
+                                    reward -= abs(course_change) * 5
+                            else:  # ✅ Alter to starboard otherwise
+                                if course_change > 0:  # ✅ Correct (starboard turn)
+                                    reward += 2 * self.timescale
+                                else:  # 🚩 Incorrect (port turn or no turn)
+                                    reward -= abs(course_change) * 5
 
                             if speed_change > 0:
                                 reward += 1 * self.timescale
 
-                        # ✅ Target to Starboard
-                        if 0 < target.relative_bearing <= 60 and target.cpa < self.CPA_THRESHOLD:
-                            if target.bcr < 0:
-                                reward += 1 * self.timescale
-                            else:
-                                reward -= 1 * self.timescale
-
+                        # ✅ Target to Starboard Bow
+                        if 0 < target.relative_bearing <= 10 and target.cpa < self.CPA_THRESHOLD:
                             if course_change > 0:  # ✅ Correct (starboard turn)
                                 reward += course_change
-                            elif course_change < 0:  # 🚩 Incorrect (port turn)
+                            else:  # 🚩 Incorrect (port turn or no turn)
                                 reward -= abs(course_change) * 5
 
-                            if speed_change < 0:
+                            if speed_change < 0:  # ✅ Slow down is also acceptable
                                 reward += 1 * self.timescale
 
-                        # ✅ Target Abaft the Beam
-                        elif 60 < target.relative_bearing <= 117.5 and target.cpa < self.CPA_THRESHOLD:
-                            if target.bcr < 0:
+                        # ✅ Target to Starboard Side (10 <= relative_bearing <= 75)
+                        if 10 <= target.relative_bearing <= 75 and target.cpa < self.CPA_THRESHOLD:
+                            if course_change > 0:  # ✅ Correct (starboard turn)
+                                reward += course_change
+                            elif speed_change < 0:  # ✅ Slow down is also acceptable
                                 reward += 1 * self.timescale
-                            else:
-                                reward -= 1 * self.timescale
+                            else:  # 🚩 Incorrect (port turn or no action)
+                                reward -= abs(course_change) * 5
 
-                            if course_change < 0:  # 🚩 Penalize for turning to port unnecessarily
-                                reward -= abs(course_change) * 2
+                        # ✅ Target Abaft the Beam (75 < relative_bearing <= 117.5)
+                        if 75 < target.relative_bearing <= 117.5 and target.cpa < self.CPA_THRESHOLD:
+                            if speed_change < 0:  # ✅ Slow down is the only option
+                                # reward += 2 * self.timescale
+                                reward += 2 * self.timescale * speed_change ** 4
+                            else:  # 🚩 Incorrect (any course change or no action)
+                                reward -= 2 * self.timescale * abs(course_change) ** 2
 
-                            if speed_change < 0:
-                                reward += 2 * self.timescale
+                        # ✅ Target on Port Side (Collision Course)
+                        # if -90 <= target.relative_bearing < 0 and target.cpa < self.CPA_THRESHOLD:
+                        #     if course_change > 0:  # ✅ Correct (starboard turn)
+                        #         reward += 2 * self.timescale
+                        #     else:  # 🚩 Incorrect (port turn or no turn)
+                        #         reward -= abs(course_change) * 5
 
         # reward for keeping ETA steady
         current_eta = current_data['own_ship']['wp_eta']
@@ -448,6 +455,9 @@ class MarineEnv(gym.Env):
             terminated = True
             return reward, terminated, truncated, info
 
+        if np.isnan(reward) or np.isinf(reward):
+            raise ValueError("Invalid reward value encountered.")
+
         return reward * self.timescale, terminated, truncated, info
 
     def reset(self, seed=None, options=None) -> tuple[ObsType, dict[str, Any]]:
@@ -466,9 +476,14 @@ class MarineEnv(gym.Env):
 
         # reset the step counter
         self.step_counter = 0
+        self.own_ship_trace.clear()
+        self.target_traces.clear()
 
+        # initialize the data dicts for the observation space representation
         own_ship_data = {}
         dangerous_targets_data = {}
+
+        # reset the lists so the targets does not overlap
         self.own_ship.reset()
 
         # TODO remove training stage
@@ -480,12 +495,8 @@ class MarineEnv(gym.Env):
         # random initial speed, minimum 7 kn
         self.own_ship.speed = np.random.uniform(low=7, high=self.own_ship.max_speed)
 
-        # TODO code the state for testing, not training, provided the target count
-        if self.training_stage == 0:
-            pass
-
         # state for wp tracking training
-        elif training_stage == 1:  # training for wp tracking, no targets
+        if training_stage == 1:  # training for wp tracking, no targets
 
             # placing the vessel in the center of the env
             self.own_ship.lat, self.own_ship.lon = np.mean(self.lat_bounds), np.mean(self.lon_bounds)
@@ -536,10 +547,11 @@ class MarineEnv(gym.Env):
             own_ship_data['wp_eta'] = target_eta
             own_ship_data['wp_target_eta'] = target_eta
 
-            target = self._place_dangerous_target_ship()
+            for _ in range(self.total_targets):
+                target = self._place_dangerous_target_ship()
 
-            # add target to detected targets
-            self.own_ship.detected_targets.append(target)
+                # add target to detected targets
+                self.own_ship.detected_targets.append(target)
 
             # generate the targets data
             dangerous_targets_data = self._generate_dangerous_targets_state()
@@ -576,6 +588,16 @@ class MarineEnv(gym.Env):
         px, py = self._latlon_to_pixels(lat, lon)
         pygame.draw.circle(self.window, (255, 255, 255), (px, py), self.vessel_size)  # Own ship (white)
 
+        # Append the current position to the own ship's trace.
+        self.own_ship_trace.append((px, py))
+        # Optionally, limit the trace length
+        if len(self.own_ship_trace) > 1000:
+            self.own_ship_trace.pop(0)
+
+        # Draw the trace line for the own ship
+        if len(self.own_ship_trace) > 1:
+            pygame.draw.lines(self.window, (200, 200, 200), False, self.own_ship_trace, 2)
+
         # Draw 1nm distance circle
         pygame.draw.circle(self.window, (255, 0, 255), (px, py), self.scale, width=1)  # Own ship (white)
 
@@ -598,6 +620,25 @@ class MarineEnv(gym.Env):
 
         # Draw the target ships
         for target in self.own_ship.detected_targets:
+            # --- Draw Target Ships and Their Traces ---
+
+            # Convert target position to pixel coordinates.
+            target_px, target_py = self._latlon_to_pixels(target.lat, target.lon)
+
+            # Update trace for the target.
+            # Use a unique identifier for the target. For simplicity, we use id(target) if no id is provided.
+            target_id = getattr(target, 'id', id(target))
+            if target_id not in self.target_traces:
+                self.target_traces[target_id] = []
+            self.target_traces[target_id].append((target_px, target_py))
+            # Optionally limit the trace length:
+            if len(self.target_traces[target_id]) > 1000:
+                self.target_traces[target_id].pop(0)
+
+            # Draw the target's trace.
+            if len(self.target_traces[target_id]) > 1:
+                pygame.draw.lines(self.window, (0, 255, 255), False, self.target_traces[target_id], 1)
+
             # Convert target ship position to pixel coordinates
             target_px, target_py = self._latlon_to_pixels(target.lat, target.lon)
             pygame.draw.circle(self.window, (0, 0, 255), (target_px, target_py), self.vessel_size)  # Target ship (blue)
@@ -613,6 +654,15 @@ class MarineEnv(gym.Env):
         # Update the display
         pygame.display.flip()
         self.clock.tick(30)  # Limit to 30 FPS
+
+        # If the mode is 'rgb_array', capture and return the frame as a numpy array.
+        if self.render_mode == 'rgb_array':
+            # Capture the current display content as an array.
+            # Note: pygame.surfarray.array3d returns an array with shape (width, height, channels)
+            # so we transpose it to (height, width, channels)
+            frame = pygame.surfarray.array3d(self.window)
+            frame = np.transpose(frame, (1, 0, 2))
+            return frame
 
     def close(self):
         if self.window is not None:
@@ -633,27 +683,27 @@ class MarineEnv(gym.Env):
         return course
 
     def _generate_dangerous_targets_state(self):
-
         # initialize empty targets list with zero-filled entries
         targets_data = self._generate_zero_target_data(self.total_targets)
 
         if self.own_ship.detected_targets:
             # Sort detected targets by dangerous coefficient (CPA ** 2 * TCPA) and take the top n
-            self.own_ship.dangerous_targets = sorted(
+            sorted_targets = sorted(
                 self.own_ship.detected_targets, key=lambda x: x.cpa ** 2 * x.tcpa
             )[:self.total_targets]
 
-            # fill in detected targets and set the targets to be dangerous
-            for i, target in enumerate(self.own_ship.dangerous_targets):
-                # it tcpa is less than zero, the situation has been resolved
-                if target.tcpa <= 0:
-                    self.own_ship.dangerous_targets.remove(target)
-                    target.is_dangerous = False
-                    break
+            # Filter out resolved targets (those with tcpa <= 0)
+            self.own_ship.dangerous_targets = [
+                target for target in sorted_targets if target.tcpa > 0
+            ]
 
-                if target.cpa <= self.CPA_THRESHOLD and target.tcpa <= self.TCPA_THRESHOLD:  # define dangerous distance targets when agent must act
+            # Fill in detected targets and set the targets to be dangerous
+            for i, target in enumerate(self.own_ship.dangerous_targets):
+                if target.cpa <= self.CPA_THRESHOLD and target.tcpa <= self.TCPA_THRESHOLD:
                     target.is_dangerous = True
                     targets_data[i] = self._generate_actual_target_data(target)
+                else:
+                    target.is_dangerous = False  # Optionally mark non-dangerous explicitly
 
         return targets_data
 
@@ -702,7 +752,11 @@ class MarineEnv(gym.Env):
         # if the relative course == 180 + relative bearing, the target is on a collision course.
         # to generate relative course != to 180 + relative bearing bss CPA, we need distance or TCPA
         # to calculate TCPA we need relative speed
-        initial_distance = np.random.uniform(7, 9)
+        if aspect in ['static', 'crossing']:
+            initial_distance = np.random.uniform(7, 9)
+        else:
+            initial_distance = np.random.uniform(12, 19)
+
         cpa = np.random.random_sample() * 2 - 1  # random CPA between -1 and 1 NM
 
         # define the position of the target vessel to comply with ColReg
@@ -834,15 +888,14 @@ if __name__ == '__main__':
         render_mode='human',
         continuous=True,
         training_stage=2,
-        timescale=1/6,
+        timescale=1 / 6,
         training=False,
         seed=42,
+        total_targets=3,
     )
     env = MarineEnv(**env_kwargs)
     agent = PPO('MlpPolicy', env=env).load("ppo.zip", device='cpu')
-    for i in range(3):
-        if i == 2:
-            a = 5
+    for i in range(5):
         state, _ = env.reset()
         print(env.training_stage)
         print(env.own_ship.detected_targets)
