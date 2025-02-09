@@ -1,3 +1,6 @@
+import torchrl
+from torchrl.objectives import ClipPPOLoss
 import torch
+loss = ClipPPOLoss()
 
-from stable_baselines3 import PPO
+torch.full()
