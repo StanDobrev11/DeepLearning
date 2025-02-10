@@ -418,7 +418,7 @@ class MarineEnv(gym.Env):
                                 reward -= abs(course_change) * 5
 
                         # ✅ Target Abaft the Beam (75 < relative_bearing <= 117.5)
-                        if 75 < target.relative_bearing <= 117.5 and target.cpa < self.CPA_THRESHOLD:
+                        if 75 < target.relative_bearing <= 112.5 and target.cpa < self.CPA_THRESHOLD:
                             if speed_change < 0:  # ✅ Slow down is the only option
                                 # reward += 2 * self.timescale
                                 reward += 2 * self.timescale * speed_change ** 4
