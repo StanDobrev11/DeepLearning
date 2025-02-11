@@ -47,22 +47,22 @@ class MarineEnv(gym.Env):
 
     # Constants for rewards and penalties
     CPA_AVOIDANCE_THRESHOLD = 1.2  # CPA threshold for excessive avoidance
-    AVOIDANCE_PENALTY_FACTOR = 5.0  # Scaling factor for excessive avoidance penalty
+    # AVOIDANCE_PENALTY_FACTOR = 5.0  # Scaling factor for excessive avoidance penalty
     COLLISION_PENALTY: int = -300  # Large penalty for collision
-    CPA_VIOLATION_PENALTY: int = -75  # Penalty for violating CPA threshold
-    CPA_SAFE_REWARD: int = 15  # Reward for maintaining safe CPA
-    STARBOARD_TURN_REWARD: int = 2  # Reward for correct starboard turn
-    TURN_PENALTY: int = -10  # Penalty for incorrect port turn
-    TURN_REWARD: int = 2
-    SPEED_PENALTY: int = -5
-    SPEED_REWARD: int = 10
-    UNNECESSARY_MOVEMENT_PENALTY: int = -1  # Penalty for unnecessary maneuvers
-    COLREG_VIOLATION: int = -50
-    # WP rewards and penalties
+    # CPA_VIOLATION_PENALTY: int = -75  # Penalty for violating CPA threshold
+    # CPA_SAFE_REWARD: int = 15  # Reward for maintaining safe CPA
+    # STARBOARD_TURN_REWARD: int = 2  # Reward for correct starboard turn
+    # TURN_PENALTY: int = -10  # Penalty for incorrect port turn
+    # TURN_REWARD: int = 2
+    # SPEED_PENALTY: int = -5
+    # SPEED_REWARD: int = 10
+    # UNNECESSARY_MOVEMENT_PENALTY: int = -1  # Penalty for unnecessary maneuvers
+    # COLREG_VIOLATION: int = -50
+    # # WP rewards and penalties
     WP_REACH_REWARD: int = 100  # reward for reaching the waypoint
-    ETA_REWARD: int = 2
-    ETA_PENALTY: int = -5
-    ETA_VIOLATION_PENALTY: int = -50
+    # ETA_REWARD: int = 2
+    # ETA_PENALTY: int = -5
+    # ETA_VIOLATION_PENALTY: int = -50
 
     def __init__(
             self,
