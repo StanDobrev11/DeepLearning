@@ -1,0 +1,30 @@
+Episode: 0
+Episode length: 460, Elapsed real time: 77 minutes
+Episode total rewards: 660.33
+Is terminated: WP Reached!, Is truncated: False
+============================
+
+Episode: 1
+Episode length: 545, Elapsed real time: 91 minutes
+Episode total rewards: 994.20
+Is terminated: WP Reached!, Is truncated: False
+============================
+
+Episode: 2
+Episode length: 734, Elapsed real time: 122 minutes
+Episode total rewards: 1027.26
+Is terminated: WP Reached!, Is truncated: False
+============================
+
+Episode: 3
+Episode length: 425, Elapsed real time: 71 minutes
+Episode total rewards: 458.00
+Is terminated: WP Reached!, Is truncated: False
+============================
+
+Episode: 4
+Episode length: 333, Elapsed real time: 56 minutes
+Episode total rewards: 561.57
+Is terminated: WP Reached!, Is truncated: False
+============================
+

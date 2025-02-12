@@ -1,5 +1,5 @@
 import random
-from typing import Tuple, Optional, Any, Dict, List
+from typing import Tuple, Optional, Any, Dict, List, Union
 
 import gymnasium as gym
 import pygame
@@ -9,7 +9,6 @@ from gymnasium.core import ObsType
 from gymnasium.spaces.utils import flatten_space
 
 import numpy as np
-from stable_baselines3 import PPO
 
 from utils import plane_sailing_position
 from vessels import OwnShip, Target, StaticObject
@@ -47,7 +46,7 @@ class MarineEnv(gym.Env):
 
     # Constants for rewards and penalties
     CPA_AVOIDANCE_THRESHOLD = 1.2  # CPA threshold for excessive avoidance
-    # AVOIDANCE_PENALTY_FACTOR = 5.0  # Scaling factor for excessive avoidance penalty
+    AVOIDANCE_PENALTY_FACTOR = 5.0  # Scaling factor for excessive avoidance penalty
     COLLISION_PENALTY: int = -300  # Large penalty for collision
     # CPA_VIOLATION_PENALTY: int = -75  # Penalty for violating CPA threshold
     # CPA_SAFE_REWARD: int = 15  # Reward for maintaining safe CPA
@@ -62,7 +61,7 @@ class MarineEnv(gym.Env):
     WP_REACH_REWARD: int = 100  # reward for reaching the waypoint
     # ETA_REWARD: int = 2
     # ETA_PENALTY: int = -5
-    # ETA_VIOLATION_PENALTY: int = -50
+    ETA_VIOLATION_PENALTY: int = -50
 
     def __init__(
             self,
@@ -81,7 +80,7 @@ class MarineEnv(gym.Env):
         self.step_counter = 0
         self.training_stage = training_stage
         self.total_targets = total_targets
-        self.seed = self.set_global_seed(seed)
+        self.seed = self._set_global_seed(seed)
 
         # initialize the environment bounds
         self.lat_bounds: Tuple[float, float] = (self.INITIAL_LAT, self.INITIAL_LAT + self.ENV_RANGE / 60)
@@ -130,7 +129,8 @@ class MarineEnv(gym.Env):
         self.clock = None
         self.vessel_size = 5  # vessel radius in pixels
 
-    def set_global_seed(self, seed=None):
+    @staticmethod
+    def _set_global_seed(seed=None) -> Union[int, None]:
         # TODO fix the random seed
         if seed is None:
             return None
@@ -142,7 +142,9 @@ class MarineEnv(gym.Env):
             torch.cuda.manual_seed(seed)
         print(f"Global seed set to {seed}")
 
-    def _define_observation_space(self):
+        return seed
+
+    def _define_observation_space(self) -> spaces.Dict:
         return spaces.Dict({
             'own_ship': spaces.Dict({
                 'course': spaces.Box(low=0, high=360, shape=(), dtype=np.float32),
@@ -344,7 +346,7 @@ class MarineEnv(gym.Env):
                         terminated = True
                         break
 
-                    # CPA Penalty (capped to prevent over-penalization)
+                    # CPA penalty (capped to prevent over-penalization)
                     if target.distance < self.CPA_THRESHOLD:
                         reward -= min(20, (2 / (target.distance + 0.1) ** 2)) * self.timescale
 
@@ -426,7 +428,7 @@ class MarineEnv(gym.Env):
             truncated = True
             return reward, terminated, truncated, info
 
-        # Penalty for Going Out of Bounds
+        # check if going out of bounds
         out_of_screen = self.own_ship.lat <= self.lat_bounds[0] or self.own_ship.lat >= self.lat_bounds[1] or \
                         self.own_ship.lon <= self.lon_bounds[0] or self.own_ship.lon >= self.lon_bounds[1]
 
@@ -448,8 +450,8 @@ class MarineEnv(gym.Env):
 
         def place_waypoint(min_range: int, max_range: int) -> tuple[float, float]:
             while True:
-                waypoint_lat = np.random.uniform(self.lat_bounds[0], self.lat_bounds[1])
-                waypoint_lon = np.random.uniform(self.lon_bounds[0], self.lon_bounds[1])
+                waypoint_lat = np.random.uniform(self.lat_bounds[0] + 0.025, self.lat_bounds[1] - 0.025)
+                waypoint_lon = np.random.uniform(self.lon_bounds[0] + 0.025, self.lon_bounds[1] - 0.025)
                 distance_to_waypoint = self.own_ship.calculate_distance((waypoint_lat, waypoint_lon))
                 # Ensure waypoint is at correct distance from the vessel
                 if min_range < distance_to_waypoint < max_range:
@@ -864,6 +866,7 @@ class MarineEnv(gym.Env):
 
 
 if __name__ == '__main__':
+    from stable_baselines3 import PPO
 
     env_kwargs = dict(
         render_mode='human',
