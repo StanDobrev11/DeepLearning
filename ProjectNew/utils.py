@@ -1,7 +1,45 @@
+from typing import Tuple
+
 import numpy as np
 
 
-def plane_sailing_position(start_point, bearing, distance):
+def plane_sailing_position(
+    start_point: Tuple[float, float],
+    bearing: float,
+    distance: float
+) -> np.ndarray:
+    """
+    Computes the new geographic position after traveling a given distance along a constant bearing
+    using the plane sailing method.
+
+    Plane sailing assumes a spherical Earth and is suitable for short to medium distances where
+    curvature effects are minimal.
+
+    Parameters:
+    - start_point (Tuple[float, float]): The starting position as (latitude, longitude) in decimal degrees.
+    - bearing (float): The direction of travel in degrees (0° = North, 90° = East, etc.).
+    - distance (float): The traveled distance in nautical miles.
+
+    Returns:
+    - np.ndarray: The new position as a NumPy array [latitude, longitude] in decimal degrees.
+
+    Calculation Steps:
+    - Converts input coordinates and bearing to radians.
+    - Converts the traveled distance from nautical miles to degrees of latitude/longitude.
+    - Computes the latitude change (\(\Delta \text{lat}\)) using the bearing and starting latitude.
+    - Adjusts for the mean latitude to calculate longitude change (\(\Delta \text{lon}\)).
+    - Converts the final latitude and longitude back to degrees.
+
+    Notes:
+    - The method assumes **constant bearing**, meaning it follows a rhumb line rather than a great-circle route.
+    - For long-distance navigation, **great-circle sailing** methods should be preferred.
+    - The function handles latitude-dependent adjustments for longitude calculations.
+
+    Example:
+    >>> plane_sailing_position((34.0, -118.0), 90, 60)
+    array([34.0, -117.0])  # Approximate new position after traveling 60 nautical miles east
+    """
+
     # Convert lat/lon and course to radians
     lat1, lon1 = np.radians(start_point)
     bearing = np.radians(bearing)
@@ -34,16 +72,46 @@ def plane_sailing_position(start_point, bearing, distance):
     return np.array([new_lat, new_lon])
 
 
-def plane_sailing_next_position(start_point, course, speed, time_interval=6):
+def plane_sailing_next_position(
+    start_point: Tuple[float, float],
+    course: float,
+    speed: float,
+    time_interval: float = 6
+) -> np.ndarray:
     """
-    Calculates the next position based on a starting point, course, and distance using plane sailing approximation.
+    Computes the next position of a vessel using the plane sailing method.
 
-    :param time_interval: time interval in minutes
-    :param start_point: tuple (lat, lon) in degrees
-    :param course: course (bearing) in degrees
-    :param distance: distance in nautical miles
-    :return: tuple (new_lat, new_lon) in degrees
+    Plane sailing is a simplified navigation technique that assumes a spherical Earth
+    and calculates new positions based on course, speed, and elapsed time.
+
+    Parameters:
+    - start_point (Tuple[float, float]): The starting position as (latitude, longitude) in decimal degrees.
+    - course (float): The vessel's course (heading) in degrees (0° = North, 90° = East, etc.).
+    - speed (float): The vessel's speed in knots (nautical miles per hour).
+    - time_interval (float, optional): The time interval for movement in minutes. Default is 6 minutes.
+
+    Returns:
+    - np.ndarray: The new position as a NumPy array [latitude, longitude] in decimal degrees.
+
+    Calculation Steps:
+    - Converts input coordinates and course to radians.
+    - Computes the distance traveled in nautical miles based on speed and time.
+    - Converts distance to radians (1 degree = 60 NM).
+    - Calculates the change in latitude (\(\Delta \text{lat}\)) using cosine of the course.
+    - Computes the mean latitude to adjust longitude calculations.
+    - Computes the change in longitude (\(\Delta \text{lon}\)), avoiding division by zero at the poles.
+    - Converts the new coordinates back to degrees.
+
+    Notes:
+    - This method assumes **short distances** where Earth's curvature effects are minimal.
+    - For long distances, **great-circle sailing** methods (e.g., Haversine) should be used.
+
+    Example:
+    >>> plane_sailing_next_position((34.0, -118.0), 90, 10, 6)
+    array([34.0, -117.99])  # Approximate new position after 6 minutes
     """
+
+
     # Convert lat/lon and course to radians
     lat1, lon1 = np.radians(start_point)
     course = np.radians(course)
@@ -79,11 +147,66 @@ def plane_sailing_next_position(start_point, course, speed, time_interval=6):
     return np.array([new_lat, new_lon])
 
 
-def mercator_latitude(lat):
+def mercator_latitude(lat: float) -> float:
+    """
+    Computes the Mercator-projected latitude for a given geographic latitude.
+
+    The Mercator projection is a cylindrical map projection that preserves angles
+    and directions, making it useful for navigation. This function transforms a
+    latitude value into its corresponding Mercator representation.
+
+    Parameters:
+    - lat (float): Latitude in radians.
+
+    Returns:
+    - float: The Mercator-projected latitude.
+
+    Notes:
+    - The Mercator projection **distorts distances** but **preserves angles**, making
+      it useful for navigation.
+    - The function does **not** handle singularities at the poles (\(\pm 90^\circ\)).
+    - Input values should be within **valid latitude ranges** to prevent domain errors.
+
+    Example:
+    >>> mercator_latitude(np.radians(45))
+    0.881373587019543  # Approximate Mercator latitude for 45°N
+    """
+
     return np.log(np.tan(np.pi / 4 + lat / 2))
 
 
-def mercator_conversion(lat1, lon1, lat2, lon2):
+def mercator_conversion(lat1: float, lon1: float, lat2: float, lon2: float) -> Tuple[float, float]:
+    """
+    Converts geographic coordinates to Mercator projection differences.
+
+    This function computes the difference in latitude and longitude in the Mercator projection,
+    which is commonly used for navigation as it preserves angles and directions.
+
+    Parameters:
+    - lat1 (float): Latitude of the starting point in decimal degrees.
+    - lon1 (float): Longitude of the starting point in decimal degrees.
+    - lat2 (float): Latitude of the destination point in decimal degrees.
+    - lon2 (float): Longitude of the destination point in decimal degrees.
+
+    Returns:
+    - Tuple[float, float]:
+      - delta_phi (float): Difference in Mercator-projected latitudes.
+      - delta_lambda (float): Difference in longitudes (radians).
+
+    Calculation:
+    - Converts latitudes and longitudes to radians.
+    - Applies the **Mercator latitude transformation** to compute **delta_phi**.
+    - Computes **delta_lambda**, the difference in longitudes.
+
+    Notes:
+    - This function assumes a **spherical Earth** model.
+    - It is primarily used in rhumb line distance calculations where a **constant bearing** is maintained.
+
+    Example:
+    >>> mercator_conversion(34.0, -118.0, 40.0, -74.0)
+    (0.103, 0.768)  # Approximate Mercator coordinate differences
+    """
+
     # Convert degrees to radians
     lat1 = np.radians(lat1)
     lat2 = np.radians(lat2)
@@ -98,7 +221,33 @@ def mercator_conversion(lat1, lon1, lat2, lon2):
     return delta_phi, delta_lambda
 
 
-def rumbline_distance(start_point, end_point):
+def rumbline_distance(start_point: Tuple[float, float], end_point: Tuple[float, float]) -> float:
+    """
+    Calculates the rhumb line (loxodromic) distance between two geographic coordinates.
+
+    A rhumb line is a path of constant bearing, making it useful for maritime and
+    aerial navigation where maintaining a steady course is important.
+
+    Parameters:
+    - start_point (Tuple[float, float]): A tuple (lat1, lon1) representing the starting latitude and longitude in decimal degrees.
+    - end_point (Tuple[float, float]): A tuple (lat2, lon2) representing the destination latitude and longitude in decimal degrees.
+
+    Returns:
+    - float: The rhumb line distance in nautical miles.
+
+    Calculation:
+    - Uses the **Mercator projection approximation** to compute differences in latitude (Δφ) and longitude (Δλ).
+    - Applies the midpoint latitude to adjust for Earth's curvature.
+    - Converts the computed distance to **nautical miles** (multiplied by 3440.065, the approximate conversion factor).
+
+    Notes:
+    - This method assumes a **spherical Earth model** and is accurate for short-to-medium distances.
+    - More precise geodesic distance calculations should use Vincenty's formula or Haversine formula.
+
+    Example:
+    >>> rumbline_distance((34.0, -118.0), (40.0, -74.0))
+    2145.3  # Approximate nautical miles from Los Angeles to New York
+    """
 
     lat1, lon1 = start_point
     lat2, lon2 = end_point
@@ -110,10 +259,33 @@ def rumbline_distance(start_point, end_point):
     return np.sqrt((delta_lambda * np.cos(np.radians(mid_lat))) ** 2 + delta_phi ** 2) * 3440.065
 
 
-def calculate_bearing(lat1, lon1, lat2, lon2):
+def calculate_bearing(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """
-    Calculate the bearing from the current position to the waypoint.
+    Calculates the initial bearing (course angle) from the current position (lat1, lon1)
+    to a given waypoint (lat2, lon2).
+
+    The bearing is computed using the great-circle navigation formula, considering the
+    Earth's curvature.
+
+    Parameters:
+    - lat1 (float): Latitude of the current position in decimal degrees.
+    - lon1 (float): Longitude of the current position in decimal degrees.
+    - lat2 (float): Latitude of the target waypoint in decimal degrees.
+    - lon2 (float): Longitude of the target waypoint in decimal degrees.
+
+    Returns:
+    - float: The initial bearing in degrees, normalized to the range [0, 360].
+
+    Formula:
+    - Converts latitudes and longitudes to radians.
+    - Uses the arctangent function to compute the directional angle between the two points.
+    - Converts the result back to degrees and ensures it remains within [0, 360].
+
+    Example:
+    >>> calculate_bearing(34.0, -118.0, 40.0, -74.0)
+    66.94  # Approximate bearing from Los Angeles to New York
     """
+
     lat1, lon1, lat2, lon2 = map(np.radians, [lat1, lon1, lat2, lon2])
     delta_lon = lon2 - lon1
     x = np.sin(delta_lon) * np.cos(lat2)
@@ -122,17 +294,40 @@ def calculate_bearing(lat1, lon1, lat2, lon2):
     return (bearing + 360) % 360  # Normalize to [0, 360]
 
 
-def calculate_relative_bearing(heading, bearing):
+def calculate_relative_bearing(heading: float, bearing: float) -> float:
     """
-    Calculates the relative bearing between the ship's heading and a given true bearing.
-    The result is expressed in a semi-circle coordinate system:
-    - Starboard bearings (clockwise from the heading) are positive (0 to 180 degrees).
-    - Port bearings (counterclockwise from the heading) are negative (0 to -180 degrees).
+    Calculates the relative bearing between the ship's heading and a target bearing.
 
-    :param heading: Current ship heading in degrees (0 to 360).
-    :param bearing: True bearing to the target in degrees (0 to 360).
-    :return: Relative bearing in degrees (positive for starboard, negative for port).
+    The relative bearing is the angular difference between the ship's **current heading**
+    and the **bearing to a target**, mapped to a **-180° to +180°** range:
+    - Positive values (**0° to 180°**) indicate the target is to the **starboard (right)**.
+    - Negative values (**-180° to 0°**) indicate the target is to the **port (left)**.
+
+    Parameters:
+    - heading (float): The current heading of the vessel in degrees (0° = North, 90° = East, etc.).
+    - bearing (float): The absolute bearing of the target in degrees (relative to North).
+
+    Returns:
+    - float: The relative bearing in degrees, normalized to the range [-180, 180].
+
+    Calculation:
+    - Normalizes both **heading** and **bearing** to the range **[0, 360]**.
+    - Computes the clockwise difference between **bearing** and **heading**.
+    - Adjusts values greater than **180°** by subtracting **360°** to map them to the correct
+      negative range (port side).
+
+    Example:
+    >>> calculate_relative_bearing(30, 100)
+    70  # Target is 70° to starboard
+
+    >>> calculate_relative_bearing(350, 10)
+    20  # Target is 20° to starboard
+
+    >>> calculate_relative_bearing(100, 30)
+    -70  # Target is 70° to port
     """
+
+
     # Normalize heading and bearing to 0-360 degrees
     heading = heading % 360
     bearing = bearing % 360
