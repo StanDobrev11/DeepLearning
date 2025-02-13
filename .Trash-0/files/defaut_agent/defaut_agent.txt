@@ -1,0 +1,5 @@
+Episode: 1
+Episode length: 310, Elapsed real time: 52 minutes, Initial WP ETA: 49
+Episode total rewards: 671.50
+Is terminated: WP Reached!, Is truncated: False
+============================

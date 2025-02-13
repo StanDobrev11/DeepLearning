@@ -129,19 +129,19 @@ class MarineEnv(gym.Env):
         self.clock = None
         self.vessel_size = 5  # vessel radius in pixels
 
-    @staticmethod
-    def _set_global_seed(seed=None) -> Union[int, None]:
-        # TODO fix the random seed
-        if seed is None:
-            return None
-        import torch
+    def _set_global_seed(self, seed=None) -> Union[int, None]:
+        """Sets the global random seed for reproducibility."""
+        if seed is not None:
+            import torch
 
-        np.random.seed(seed)
-        torch.manual_seed(seed)
-        if torch.cuda.is_available():
-            torch.cuda.manual_seed(seed)
-        print(f"Global seed set to {seed}")
+            self.seed_value = seed
+            np.random.seed(seed)
+            random.seed(seed)
+            torch.manual_seed(seed)
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed_all(seed)
 
+            print(f'Seed set to {seed}')
         return seed
 
     def _define_observation_space(self) -> spaces.Dict:
@@ -444,9 +444,12 @@ class MarineEnv(gym.Env):
         return reward * self.timescale, terminated, truncated, info
 
     def reset(self, seed=None, options=None) -> tuple[ObsType, dict[str, Any]]:
-        # seed for random number generator
+        # set random seed if provided
         if seed is not None:
-            super().reset(seed=self.seed)
+            self._set_global_seed(seed)
+
+        # Proceed with the rest of your reset logic...
+        super().reset(seed=self.seed)
 
         def place_waypoint(min_range: int, max_range: int) -> tuple[float, float]:
             while True:
