@@ -26,3 +26,15 @@ from optuna.samplers import TPESampler
 from optuna.visualization import plot_optimization_history, plot_param_importances
 
 import environments
+
+class Test:
+    def __init__(self):
+        self._value = None
+
+    @property
+    def value_2(self):
+        return
+
+    @value_2.setter
+    def value_2(self, value):
+        pass
