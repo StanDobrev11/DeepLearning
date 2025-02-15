@@ -38,3 +38,5 @@ class Test:
     @value_2.setter
     def value_2(self, value):
         pass
+
+Test().
