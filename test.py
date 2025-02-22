@@ -1,12 +1,8 @@
+from collections import deque
+
 import numpy as np
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-
-from torch.optim import SGD, Adam
-
-import matplotlib.pyplot as plt
+import gymnasium as gym
 
 
 def print_nn_state(network):
@@ -18,6 +14,90 @@ def print_nn_state(network):
             print(f'{key} bias: ', layer.state_dict['bias'])
             print(f'{key} output: ', layer._last_output)
             print('=' * 60)
+
+
+def tanh_activation(layer, x):
+    """ Applies TanH activation """
+    layer._a_output = np.tanh(x)
+    layer._grad_fn = 'tanh'
+    return layer._a_output
+
+
+def tanh_derivative(x):
+    return 1 - np.tanh(x)
+
+
+def relu_activation(layer, x):
+    """ Applies ReLU activation function and tracks it """
+    layer._a_output = np.maximum(0, x)
+    layer._grad_fn = 'relu'
+    return layer._a_output
+
+
+def relu_derivative(x):
+    return (x > 0).astype(float)
+
+
+def softplus_activation(layer, x):
+    """ Computes the Softplus activation function: ln(1 + e^x) """
+    layer._grad_fn = 'softplus'
+    return np.log1p(np.exp(x))  # log1p is numerically stable for small x
+
+
+def softplus_derivative(x):
+    """ Computes the derivative of Softplus, which is the Sigmoid function """
+    return 1 / (1 + np.exp(-x))
+
+
+def log_probability(x, mu, sigma):
+    """ Computes the log probability of a sample x under a normal distribution with mean mu and std sigma. """
+    return -0.5 * (np.log(2 * np.pi) + 2 * np.log(sigma) + ((x - mu) ** 2) / (sigma ** 2))
+
+
+def gaussian_entropy(sigma):
+    """ Computes the entropy of a Gaussian distribution with standard deviation sigma. """
+    return 0.5 * (np.log(2 * np.pi * np.e * sigma ** 2))
+
+
+def compute_gae(next_value: list[int], rewards, dones: list[tuple[bool, bool]], values: list[int], gamma: float,
+                lam: float) -> tuple[float, float]:
+    """
+    Compute Generalized Advantage Estimation (GAE).
+    """
+    values = values + [next_value]
+    gae = 0  # Initial value of the advantage
+    returns = deque([])
+    advantages = deque([])
+
+    for step in reversed(range(len(rewards))):
+        delta = rewards[step] + gamma * values[step + 1] * (1 - dones[step]) - values[step]
+        gae = delta + gamma * lam * (1 - dones[step]) * gae
+        returns.appendleft(gae + values[step])
+        advantages.appendleft(gae)
+
+    # Normalize advantages
+    advantages = np.array(advantages)
+    advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+
+    return np.array(returns), advantages
+
+
+def mse(predicted, true):
+    return np.mean((predicted - true) ** 2) / true.size
+
+
+class Memory:
+    def __init__(self):
+        self.states = []
+        self.rewards = []
+        self.dones = []
+        self.log_probs = []
+        self.actions = []
+        self.critic_values = []
+
+    def clear(self):
+        for key in self.__dict__.keys():
+            self.__dict__[key].clear()
 
 
 class Bias:
@@ -71,10 +151,10 @@ class LinearLayer:
         self.out_features = out_features
         self.bias = Bias(out_features)()
         self.weights = Weight(in_features, out_features)()
-        self._require_grad = require_grad
         self._input = None  # store input values either activated or not
         self._z_output = None  # Store output before activation
         self._a_output = None  # Store output after activation
+        self._grad_fn: str = None  # tracks activated function type
 
     @property
     def state_dict(self):
@@ -91,13 +171,30 @@ class LinearLayer:
 
     def backward(self, dldy, lr):
         """ Backpropagate gradients and update weights & bias """
+        # ensure numpy array
+        if isinstance(self._input, list):
+            self._input = np.array(self._input)
+
+            # Ensure dldy has the correct shape
+        if np.isscalar(dldy):
+            dldy = np.full_like(self._z_output, dldy)  # Expand scalar loss
+
+        elif dldy.shape != self._z_output.shape:
+            dldy = dldy.reshape(self._z_output.shape)  # Align shapes
 
         # Compute gradient of weights and activations
         if self._a_output is None:  # No activation applied (e.g., output layer)
             dw = np.dot(self._input.T, dldy)  # Gradient of weights
             da = np.dot(dldy, self.weights.T)  # Gradient of activations for previous layer
-        else:  # ReLU activation applied
-            dZ = dldy * relu_derivative(self._z_output)  # Apply ReLU derivative
+        else:  # activation applied
+            derivative_mapper = {
+                'tanh': tanh_derivative,
+                'relu': relu_derivative,
+                'softplus': softplus_derivative,
+            }
+            derivative = self._grad_fn
+
+            dZ = dldy * derivative_mapper[derivative](self._z_output)  # Apply derivative
             dw = np.dot(self._input.T, dZ)  # Compute weight gradients
             da = np.dot(dZ, self.weights.T)  # Compute activation gradients for previous layer
 
@@ -121,6 +218,8 @@ class LinearLayer:
 
 
 class NeuralNetwork:
+    def __init__(self, lr: float = 4e-3):
+        self._lr = lr
 
     @property
     def state_dict(self):
@@ -132,107 +231,191 @@ class NeuralNetwork:
     def forward(self, x):
         raise NotImplementedError('The forward() method must be implemented')
 
-    def backward(self, y_pred, y_true, lr=0.01):
-        dldy = 2 * (y_pred - y_true) / y_true.size
+    def backward(self, policy_loss, value_loss, entropy_loss):
+        losses = [policy_loss, policy_loss + ENT_COEF * entropy_loss, VF_COEF * value_loss]
+        output_layers = [self.mu, self.sigma, self.value]
+        inner_layers = [self.hidden_layer, self.input_layer]
 
-        for key in reversed(self.state_dict.keys()):
-            layer = self.__getattribute__(key)
-            dldy = layer.backward(dldy, lr=lr)
+        separate_gradiens = []
+        for layer, loss in zip(output_layers, losses):
+            dldlayer = layer.backward(loss, lr=self._lr)
+            separate_gradiens.append(dldlayer)
+
+        # get mean gradient
+        mean_grad = np.array(separate_gradiens).mean()
+
+        for layer in inner_layers:
+            mean_grad = layer.backward(mean_grad, lr=self._lr)
 
     def __call__(self, x):
         return self.forward(x)
-
-    @property
-    def track_functions(self) -> list:
-        return self._grad_fn
 
     def __repr__(self):
         return self.state_dict
 
 
-def relu_activation(layer, x):
-    """ Applies ReLU activation function and tracks it """
-    layer._a_output = np.maximum(0, x)
-    return layer._a_output
-
-
-def relu_derivative(x):
-    return (x > 0).astype(float)
-
-
-class TestNetwork(nn.Module):
-    def __init__(self):
+class MountainCar(NeuralNetwork):
+    def __init__(self, action_space_dim, observation_space_dim):
         super().__init__()
-        self.input_layer = nn.Linear(2, 2)
-        self.hidden_layer = nn.Linear(2, 4)
-        self.output_layer = nn.Linear(4, 3)
 
-    def forward(self, x):
-        x = torch.tensor(x, dtype=torch.float32)
-        x = F.relu(self.input_layer(x))
-        x = F.relu(self.hidden_layer(x))
-        return F.relu(self.output_layer(x))
+        self.input_layer = LinearLayer(observation_space_dim, 64)
+        self.hidden_layer = LinearLayer(64, 64)
 
+        # actor network
+        self.mu = LinearLayer(64, action_space_dim)
+        self.sigma = LinearLayer(64, action_space_dim)
 
-def train_original(model, optimizer, epochs, x_true, y_true):
-    losses = []
-    y_true = torch.tensor(y_true, dtype=torch.float32)
-    for epoch in range(epochs):
-        y_pred = model.forward(x_true)
-        loss = F.mse_loss(y_pred, y_true)
-        losses.append(loss.detach().numpy())
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-
-        if epoch % 50 == 0:  # Print loss every 100 epochs
-            print(f"Epoch {epoch}, Loss: {loss:.4f}")
-    return losses
-
-
-class SingleNeuronNN(NeuralNetwork):
-    def __init__(self):
-        super().__init__()
-        self.input_layer = LinearLayer(2, 2)
-        self.hidden_layer = LinearLayer(2, 4)
-        self.output_layer = LinearLayer(4, 3)
+        # critic network
+        self.value = LinearLayer(64, 1)
 
     def forward(self, x):
         x = self.input_layer(x)
-        x = relu_activation(self.input_layer, x)
+        x = tanh_activation(self.input_layer, x)
         x = self.hidden_layer(x)
-        x = relu_activation(self.hidden_layer, x)
-        x = self.output_layer(x)
-        return relu_activation(self.output_layer, x)
+        x = tanh_activation(self.hidden_layer, x)
+
+        mu = self.mu(x)
+        mu = tanh_activation(self.mu, mu)  # generating distribution in range (-1, 1)
+
+        sigma = self.sigma(x)
+        sigma = softplus_activation(self.sigma, sigma).clip(min=1e-05,
+                                                            max=3)  # std deviation, always positive, not larger than the set value
+
+        value = self.value(x)  # no activation of the critic network
+
+        return mu, sigma, value
+
+    def act(self, state):
+        """ return action, log_pi and value """
+        mu, sigma, value = self.forward(state)
+
+        # draw action from the distribution
+        action = np.random.normal(mu, sigma)
+        action = np.tanh(action)
+
+        # calculate the log probability of that action
+        log_prob = log_probability(action, mu, sigma)
+
+        return action, log_prob, value
+
+    def evaluate(self, state, action):
+        mu, sigma, value = self.forward(state)
+
+        # reverse the tanh clipping of the action
+        action = np.atanh(action).clip(min=-0.999, max=0.999)
+
+        # get the new log_prob
+        log_prob = log_probability(action, mu, sigma)
+
+        # get the entropy
+        entropy = gaussian_entropy(sigma)
+
+        return entropy, log_prob, value
 
 
-def train(model, x, y_pred, y_true, epochs=1, lr=0.05):
-    losses = []
-    for epoch in range(epochs):
-        y_pred = model.forward(x)
+def train(agent, env, episodes=10, epochs=8):
+    memory = Memory()
+    total_losses = []
+    for episode in range(episodes):
+        memory.clear()
+        episode_reward = 0
+        episode_length = 0
+        state, _ = env.reset()
+        done = False
+        while True:
+            action, log_prob, value = agent.act(state)
 
-        # loss MSE
-        loss = np.mean((y_pred - y_true) ** 2) / y_true.size
-        losses.append(loss)
-        print(f'Epoch: {epoch}, Loss: ', loss)
-        model.backward(y_pred, y_true, lr=lr)
-    return losses
+            state, reward, terminated, truncated, _ = env.step(action[0])
+
+            done = terminated or truncated
+
+            memory.states.append(state)
+            memory.rewards.append(reward)
+            memory.actions.append(action)
+            memory.dones.append(done)
+            memory.critic_values.append(value)
+            memory.log_probs.append(log_prob)
+
+            episode_reward += reward
+            episode_length += 1
+
+            if terminated or truncated:
+                break
+
+        # Log episode reward and length
+        # writer.add_scalar("Episode/Reward", episode_reward, episode)
+        # writer.add_scalar("Episode/Length", episode_length, episode)
+
+        # when the episoed is completed, calculate the GAE
+        if terminated:
+            next_value = 0
+        elif truncated:
+            _, _, next_value = agent.act(state)
+
+        returns, advantages = compute_gae(
+            next_value=next_value,
+            rewards=memory.rewards,
+            dones=memory.dones,
+            values=memory.critic_values,
+            gamma=GAMMA,
+            lam=LAMBDA,
+        )
+
+        for epoch in range(epochs):
+            # for each episode collected, perform update of the policy
+            entropies, new_probs, new_values = agent.evaluate(memory.states, memory.actions)
+
+            # probability ratio
+            old_probs = memory.log_probs
+            ratio = np.exp(new_probs - old_probs)
+
+            # clipped surrogate loss
+            clipped_loss = ratio.clip(min=1 - CLIP_EPS, max=1 + CLIP_EPS)
+
+            # calculate policy loss
+            # return ratio, advantages, clipped_loss
+            policy_loss = -np.minimum(ratio * advantages, clipped_loss * advantages).mean()
+
+            # calculate clipped value loss
+            old_values = memory.critic_values
+
+            values_clipped = old_values + np.clip(new_values - old_values, -CLIP_VF, +CLIP_VF)
+
+            value_loss_unclipped = mse(new_values, returns)
+            value_loss_clipped = mse(values_clipped, returns)
+
+            value_loss = np.minimum(value_loss_unclipped, value_loss_clipped).mean()
+
+            # entropy loss
+            entropy_loss = -entropies.mean()
+
+            total_loss = policy_loss + VF_COEF * value_loss + ENT_COEF * entropy_loss
+            total_losses.append(total_loss)
+            # backward the loss
+            agent.backward(policy_loss, value_loss, entropy_loss)
+
+    return total_losses
+
+GAMMA = 0.99
+LAMBDA = 0.95
+EPOCHS = 4
+CLIP_EPS = 0.2
+CLIP_VF = 0.2
+LEARNING_RATE = 3e-5
+LR_DECAY = 0.99
+ENT_START = 0.2
+ENT_END = 0.05
+ENT_COEF = 0.02
+VF_COEF = 0.5 # this sets the weight of the value function when calculating total loss
+MAX_GRAD_NORM = 0.5 # clipping of the gradients
+KL_TARGET = 0.01
+BATCH_SIZE = 10
+
 
 
 if __name__ == '__main__':
-    x_true = np.random.randn(1, 2)
-    y_true = np.random.randn(1, 3)
-    y_pred = np.random.randn(1, 3)
-
-    single_neuron = SingleNeuronNN()
-    test_network = TestNetwork()
-    optimizer = Adam(test_network.parameters(), lr=0.03)
-
-    losses_original = train_original(test_network, optimizer, epochs=200, x_true=x_true, y_true=y_true)
-    losses = train(single_neuron, x=x_true, y_pred=y_pred, y_true=y_true, epochs=200, lr=0.03)
-
-    plt.plot(range(len(losses)), losses)
-    plt.plot(range(len(losses_original)), losses_original)
-    plt.ylabel('Loss')
-    plt.xlabel('Iteration')
-    plt.show()
+    env = gym.make("MountainCarContinuous-v0", render_mode="rgb_array", goal_velocity=0)
+    action_space_dim = env.action_space.shape[0]
+    observation_space_dim = env.observation_space.shape[0]
+    agent = MountainCar(action_space_dim, observation_space_dim)
+    loss = train(agent, env, episodes=10, epochs=8)
