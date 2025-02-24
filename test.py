@@ -79,7 +79,7 @@ def compute_gae(next_value: list[int], rewards, dones: list[tuple[bool, bool]], 
     advantages = np.array(advantages)
     advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
-    return np.array(returns), advantages
+    return np.array(returns).squeeze(), advantages.squeeze()
 
 
 def mse(predicted, true):
@@ -296,7 +296,7 @@ class MountainCar(NeuralNetwork):
         # calculate the log probability of that action
         log_prob = log_probability(action, mu, sigma)
 
-        return action, log_prob, value
+        return action, log_prob.squeeze(), value.squeeze()
 
     def evaluate(self, state, action):
         mu, sigma, value = self.forward(state)
@@ -305,12 +305,12 @@ class MountainCar(NeuralNetwork):
         action = np.atanh(action).clip(min=-0.999, max=0.999)
 
         # get the new log_prob
-        log_prob = log_probability(action, mu, sigma)
+        log_prob = log_probability(action.squeeze(), mu.squeeze(), sigma.squeeze())
 
         # get the entropy
         entropy = gaussian_entropy(sigma)
 
-        return entropy, log_prob, value
+        return entropy.squeeze(), log_prob.squeeze(), value.squeeze()
 
 
 def train(agent, env, episodes=10, epochs=8):
@@ -321,7 +321,7 @@ def train(agent, env, episodes=10, epochs=8):
         episode_reward = 0
         episode_length = 0
         state, _ = env.reset()
-        done = False
+
         while True:
             action, log_prob, value = agent.act(state)
 
@@ -419,3 +419,6 @@ if __name__ == '__main__':
     observation_space_dim = env.observation_space.shape[0]
     agent = MountainCar(action_space_dim, observation_space_dim)
     loss = train(agent, env, episodes=10, epochs=8)
+
+    import matplotlib.pyplot as plt
+    plt.plot(loss)
