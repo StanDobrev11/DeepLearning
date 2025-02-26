@@ -5,6 +5,7 @@ import numpy as np
 import gymnasium as gym
 
 
+
 def print_nn_state(network):
     for key in network.state_dict.keys():
         if not key.startswith('_'):
@@ -41,6 +42,7 @@ def relu_derivative(x):
 def softplus_activation(layer, x):
     """ Computes the Softplus activation function: ln(1 + e^x) """
     layer._grad_fn = 'softplus'
+    x = np.clip(x, -50, 50)
     return np.log1p(np.exp(x))  # log1p is numerically stable for small x
 
 
@@ -77,13 +79,16 @@ def compute_gae(next_value: list[int], rewards, dones: list[tuple[bool, bool]], 
 
     # Normalize advantages
     advantages = np.array(advantages)
-    advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+    advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-6)
+
+    # returns = (returns - np.mean(returns)) / (np.std(returns) + 1e-6)
 
     return np.array(returns).squeeze(), advantages.squeeze()
 
 
 def mse(predicted, true):
-    return np.mean((predicted - true) ** 2) / true.size
+    diff = np.clip(predicted - true, -1e6, 1e6)  # Clip extreme values
+    return np.mean(diff ** 2)  # Remove division by true.size
 
 
 class Memory:
@@ -100,20 +105,17 @@ class Memory:
             self.__dict__[key].clear()
 
 
+import numpy as np
+
 class Bias:
-    def __init__(self, h_size: int) -> None:
+    def __init__(self, h_size: int, init_value: float = 0.0) -> None:
         self._h_size = h_size
-        self._value = None
+        # Often, biases are simply initialized to zero.
+        self._value = np.full((1, h_size), init_value)
 
     @property
     def value(self):
-        if self._value is None:
-            self._value = self._generate_value()
-
         return self._value
-
-    def _generate_value(self):
-        return np.random.uniform(-0.5, 0.5, size=(1, self._h_size))
 
     def __call__(self):
         return self.value
@@ -123,20 +125,30 @@ class Bias:
 
 
 class Weight:
-    def __init__(self, v_size: int, h_size: int):
+    def __init__(self, v_size: int, h_size: int, method: str = "xavier") -> None:
         self._v_size = v_size
         self._h_size = h_size
+        self.method = method.lower()
         self._value = None
 
     @property
     def value(self):
         if self._value is None:
             self._value = self._generate_value()
-
         return self._value
 
     def _generate_value(self):
-        return np.random.uniform(-0.5, 0.5, size=(self._v_size, self._h_size))
+        if self.method == "xavier":
+            # Xavier/Glorot initialization
+            limit = np.sqrt(6 / (self._v_size + self._h_size))
+            return np.random.uniform(-limit, limit, size=(self._v_size, self._h_size))
+        elif self.method == "he":
+            # He initialization (recommended for layers with ReLU activations)
+            std = np.sqrt(2 / self._v_size)
+            return np.random.randn(self._v_size, self._h_size) * std
+        else:
+            # Fallback to a default uniform distribution
+            return np.random.uniform(-0.5, 0.5, size=(self._v_size, self._h_size))
 
     def __call__(self):
         return self.value
@@ -146,7 +158,7 @@ class Weight:
 
 
 class LinearLayer:
-    def __init__(self, in_features: int, out_features: int, require_grad=True):
+    def __init__(self, in_features: int, out_features: int, name: str, require_grad=True):
         self.in_features = in_features
         self.out_features = out_features
         self.bias = Bias(out_features)()
@@ -155,6 +167,14 @@ class LinearLayer:
         self._z_output = None  # Store output before activation
         self._a_output = None  # Store output after activation
         self._grad_fn: str = None  # tracks activated function type
+        self._name: str = name
+
+    def __str__(self):
+        return self.name
+
+    @property
+    def name(self):
+        return self._name
 
     @property
     def state_dict(self):
@@ -186,6 +206,9 @@ class LinearLayer:
         if self._a_output is None:  # No activation applied (e.g., output layer)
             dw = np.dot(self._input.T, dldy)  # Gradient of weights
             da = np.dot(dldy, self.weights.T)  # Gradient of activations for previous layer
+
+            # Compute gradient of bias (sum over batch)
+            db = np.sum(dldy, axis=0, keepdims=True)
         else:  # activation applied
             derivative_mapper = {
                 'tanh': tanh_derivative,
@@ -198,8 +221,14 @@ class LinearLayer:
             dw = np.dot(self._input.T, dZ)  # Compute weight gradients
             da = np.dot(dZ, self.weights.T)  # Compute activation gradients for previous layer
 
-        # Compute gradient of bias (sum over batch)
-        db = np.sum(dldy, axis=0, keepdims=True)
+            # Compute gradient of bias (sum over batch)
+            db = np.sum(dZ, axis=0, keepdims=True)
+
+        grad_norm = np.linalg.norm(dw)
+        if grad_norm > MAX_GRAD_NORM and grad_norm != 0:
+            dw = dw * (MAX_GRAD_NORM / grad_norm)
+        elif grad_norm == 0:
+            dw = np.zeros_like(dw)  # Prevent division by zero
 
         # Update weights and biases using gradient descent
         self.weights -= lr * dw  # Correct weight update
@@ -232,7 +261,8 @@ class NeuralNetwork:
         raise NotImplementedError('The forward() method must be implemented')
 
     def backward(self, policy_loss, value_loss, entropy_loss):
-        losses = [policy_loss, policy_loss + ENT_COEF * entropy_loss, VF_COEF * value_loss]
+        losses = [policy_loss, ENT_COEF * entropy_loss, VF_COEF * value_loss]
+        # losses = [policy_loss, entropy_loss, value_loss]
         output_layers = [self.mu, self.sigma, self.value]
         inner_layers = [self.hidden_layer, self.input_layer]
 
@@ -242,10 +272,11 @@ class NeuralNetwork:
             separate_gradiens.append(dldlayer)
 
         # get mean gradient
-        mean_grad = np.array(separate_gradiens).mean()
+        total_gradient = np.sum(separate_gradiens, axis=0)  # Sum gradients instead of taking mean
+
 
         for layer in inner_layers:
-            mean_grad = layer.backward(mean_grad, lr=self._lr)
+            total_gradient = layer.backward(total_gradient, lr=self._lr)
 
     def __call__(self, x):
         return self.forward(x)
@@ -258,15 +289,15 @@ class MountainCar(NeuralNetwork):
     def __init__(self, action_space_dim, observation_space_dim):
         super().__init__()
 
-        self.input_layer = LinearLayer(observation_space_dim, 64)
-        self.hidden_layer = LinearLayer(64, 64)
+        self.input_layer = LinearLayer(observation_space_dim, 16, name='input_layer')
+        self.hidden_layer = LinearLayer(16, 16, name='hidden_layer')
 
         # actor network
-        self.mu = LinearLayer(64, action_space_dim)
-        self.sigma = LinearLayer(64, action_space_dim)
+        self.mu = LinearLayer(16, action_space_dim, name='mu')
+        self.sigma = LinearLayer(16, action_space_dim, name='sigma')
 
         # critic network
-        self.value = LinearLayer(64, 1)
+        self.value = LinearLayer(16, 1, name='value')
 
     def forward(self, x):
         x = self.input_layer(x)
@@ -278,10 +309,11 @@ class MountainCar(NeuralNetwork):
         mu = tanh_activation(self.mu, mu)  # generating distribution in range (-1, 1)
 
         sigma = self.sigma(x)
-        sigma = softplus_activation(self.sigma, sigma).clip(min=1e-05,
+        sigma = softplus_activation(self.sigma, sigma).clip(min=1e-1,
                                                             max=3)  # std deviation, always positive, not larger than the set value
 
         value = self.value(x)  # no activation of the critic network
+        # value = tanh_activation(self.value, value)
 
         return mu, sigma, value
 
@@ -293,22 +325,30 @@ class MountainCar(NeuralNetwork):
         action = np.random.normal(mu, sigma)
         action = np.tanh(action)
 
-        # calculate the log probability of that action
-        log_prob = log_probability(action, mu, sigma)
+        # Compute log probability with Jacobian correction
+        log_prob = log_probability(action.squeeze(), mu.squeeze(), sigma.squeeze())
+        # log_prob = np.sum(log_prob, axis=-1)
+        # log_prob -= np.sum(np.log(1 - action ** 2 + epsilon), axis=-1)  # Jacobian correction
 
         return action, log_prob.squeeze(), value.squeeze()
 
     def evaluate(self, state, action):
         mu, sigma, value = self.forward(state)
 
-        # reverse the tanh clipping of the action
-        action = np.atanh(action).clip(min=-0.999, max=0.999)
+        # Reverse the tanh transformation safely
 
-        # get the new log_prob
-        log_prob = log_probability(action.squeeze(), mu.squeeze(), sigma.squeeze())
+        action = np.array(action).squeeze()  # Prevent NaN in arctanh
 
-        # get the entropy
+        z = np.arctanh(action)  # Inverse transformation
+        # z = np.array(action).clip(-0.999, 0.999)
+        # Compute log probability with Jacobian correction
+        log_prob = log_probability(z.squeeze(), mu.squeeze(), sigma.squeeze())
+        # log_prob = np.sum(log_prob, axis=-1)
+        # log_prob -= np.sum(np.log(1 - action ** 2 + epsilon), axis=-1)  # Apply Jacobian correction
+
+        # Compute entropy
         entropy = gaussian_entropy(sigma)
+        entropy = np.sum(entropy, axis=-1)  # Sum over dimensions if multi-action
 
         return entropy.squeeze(), log_prob.squeeze(), value.squeeze()
 
@@ -316,6 +356,8 @@ class MountainCar(NeuralNetwork):
 def train(agent, env, episodes=10, epochs=8):
     memory = Memory()
     total_losses = []
+    total_reward = []
+    total_length = []
     for episode in range(episodes):
         memory.clear()
         episode_reward = 0
@@ -328,7 +370,6 @@ def train(agent, env, episodes=10, epochs=8):
             state, reward, terminated, truncated, _ = env.step(action[0])
 
             done = terminated or truncated
-
             memory.states.append(state)
             memory.rewards.append(reward)
             memory.actions.append(action)
@@ -361,64 +402,85 @@ def train(agent, env, episodes=10, epochs=8):
             lam=LAMBDA,
         )
 
+        if terminated:
+            epochs = 12
+        else:
+            epochs = 4
+
         for epoch in range(epochs):
+            kl_stopped = False
             # for each episode collected, perform update of the policy
             entropies, new_probs, new_values = agent.evaluate(memory.states, memory.actions)
 
             # probability ratio
-            old_probs = memory.log_probs
-            ratio = np.exp(new_probs - old_probs)
+            old_probs = np.array(memory.log_probs)
+            ratio = np.exp(new_probs - old_probs)  # Prevent large updates
 
             # clipped surrogate loss
             clipped_loss = ratio.clip(min=1 - CLIP_EPS, max=1 + CLIP_EPS)
 
             # calculate policy loss
             # return ratio, advantages, clipped_loss
-            policy_loss = -np.minimum(ratio * advantages, clipped_loss * advantages).mean()
+            policy_loss = -np.minimum(ratio * advantages, clipped_loss * advantages)
+
+            # early stopping if KL divergence is too high
+            kl_approx = (old_probs - new_probs).mean()
+            if kl_approx > 1.5 * KL_TARGET:
+                print(f"Early stopping update: KL divergence {kl_approx.item():.4f} exceeds threshold")
+                kl_stopped = True
+                break  # exit the update loop early for this epoch
 
             # calculate clipped value loss
             old_values = memory.critic_values
 
             values_clipped = old_values + np.clip(new_values - old_values, -CLIP_VF, +CLIP_VF)
 
-            value_loss_unclipped = mse(new_values, returns)
-            value_loss_clipped = mse(values_clipped, returns)
+            value_loss_unclipped = (new_values - returns) ** 2
+            value_loss_clipped = (values_clipped - returns) ** 2
 
-            value_loss = np.minimum(value_loss_unclipped, value_loss_clipped).mean()
+            value_loss = np.minimum(value_loss_unclipped, value_loss_clipped)
 
             # entropy loss
-            entropy_loss = -entropies.mean()
+            entropy_loss = -entropies
 
-            total_loss = policy_loss + VF_COEF * value_loss + ENT_COEF * entropy_loss
+            total_loss = policy_loss.mean() + VF_COEF * value_loss.mean() + ENT_COEF * entropy_loss.mean()
+
             total_losses.append(total_loss)
             # backward the loss
             agent.backward(policy_loss, value_loss, entropy_loss)
 
-    return total_losses
+        if not kl_stopped:
+            total_reward.append(episode_reward)
+            total_length.append(episode_length)
+            print(f'Episode: {episode}, Loss: {total_loss}, Reward: {episode_reward}')
+
+    return total_losses, total_reward, total_length
+
 
 GAMMA = 0.99
 LAMBDA = 0.95
 EPOCHS = 4
 CLIP_EPS = 0.2
 CLIP_VF = 0.2
-LEARNING_RATE = 3e-5
+LEARNING_RATE = 3e-03
 LR_DECAY = 0.99
 ENT_START = 0.2
 ENT_END = 0.05
-ENT_COEF = 0.02
-VF_COEF = 0.5 # this sets the weight of the value function when calculating total loss
-MAX_GRAD_NORM = 0.5 # clipping of the gradients
-KL_TARGET = 0.01
+ENT_COEF = 0.5
+VF_COEF = 0.8  # this sets the weight of the value function when calculating total loss
+MAX_GRAD_NORM = 10  # clipping of the gradients
+KL_TARGET = 0.5
 BATCH_SIZE = 10
-
-
+epsilon = 1e-5
 
 if __name__ == '__main__':
     env = gym.make("MountainCarContinuous-v0", render_mode="rgb_array", goal_velocity=0)
     action_space_dim = env.action_space.shape[0]
     observation_space_dim = env.observation_space.shape[0]
     agent = MountainCar(action_space_dim, observation_space_dim)
-    loss = train(agent, env, episodes=10, epochs=8)
+    loss, *rest = train(agent, env, episodes=200, epochs=8)
 
     import matplotlib.pyplot as plt
+
     plt.plot(loss)
+    plt.show()
